@@ -19,7 +19,7 @@ Unlike simple scripts that only average rev-limiter bounce RPM, **FH6SmartShift*
 
 Additionally, the system provides chassis dynamics telemetry for RWD and AWD vehicles: a power oversteer warning (`PowerOversteerWarning`), a counter-steering indicator (`IsCounterSteering`), and a safe downshift calculator that accounts for braking force and front-axle dive (`DbgChassisDive`).
 
-![FH6SmartShift Dashboard Overview](./FH6SmartShift_Dashboard_EN.png)
+![FH6SmartShift Dashboard Overview](./FH6SmartShift_Dashboard_EN.jpg)
 
 ---
 
