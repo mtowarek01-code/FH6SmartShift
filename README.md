@@ -66,7 +66,7 @@ Additionally, the system provides chassis dynamics telemetry for RWD and AWD veh
 1. Completely close SimHub (the running application locks `.dll` files).
 2. Copy `FH6SmartShift.dll` directly into the main SimHub directory (by default `C:\Program Files (x86)\SimHub\`).
 3. Launch SimHub and enable the **FH6SmartShift** plugin in the prompt dialog.
-4. Import the contents of the `Dashboard/` folder into SimHub Dash Studio (by double-clicking the `.simhubdash` file or copying the folder to `C:\Program Files (x86)\SimHub\DashTemplates\`).
+4. Import the contents of the DashTemplates.zip archive into SimHub Dash Studio (by double-clicking the `.simhubdash` file or copying the folder to `C:\Program Files (x86)\SimHub\DashTemplates\`).
 5. In Forza Horizon 6 settings (**HUD and Gameplay -> Data Out**), enable UDP telemetry and configure the IP address and port to match SimHub.
 
 ### Option B: Building from Source Code
