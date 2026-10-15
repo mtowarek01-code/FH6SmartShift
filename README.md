@@ -80,6 +80,15 @@ Additionally, the system provides chassis dynamics telemetry for RWD and AWD veh
 
 ---
 
+## 🏁 How to Calibrate a New Car (In-Game Quick Start)
+
+When you drive a car (or apply a new tune) for the first time, all gears in the matrix start as red **`(-)`** (unmapped):
+
+1. **Find a flat straight** with good grip (dry tarmac, no puddles or heavy kerbs).
+2. **Pull each gear at full throttle (WOT) all the way to the rev limiter** and hold it briefly until the gear indicator turns **Blue `(R)`** (*Ratio Locked*).
+3. **Upshift to the next gear (`N+1`) and repeat:** Pulling each gear to the limiter ensures two things at once — it locks the transmission ratio **`(R)`** and populates the Virtual Dyno power bands all the way to redline (`100%` mapping progress).
+4. **Automatic Confirmation:** As soon as the next gear (`N+1`) locks its ratio **`(R)`**, the previous gear (`N`) will automatically calculate the power intersection and turn **Green `(P)`** (*Math Optimal*) or **Green `(L)`** (*Limiter Optimal*).
+
 ## 📊 Dashboard User Guide — How to Read the Indicators
 
 Below is a detailed breakdown of how each element on the included dashboard operates, fully aligned with the underlying C# code logic:
