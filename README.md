@@ -100,7 +100,9 @@ Below is a detailed breakdown of how each element on the included dashboard oper
 5. **`SLIP` Indicator (Slip / G-Force Warning):** Bound to `[FH6SmartShift.IsGripLost]`. Illuminates yellow when combined lateral/longitudinal G-force exceeds `1.25 G` or driven wheel longitudinal slip exceeds `0.30`. *(Note: Dyno writing is gated separately by `tractionOk`, which permits slip up to `0.65` in gears 1–3 and `0.40` in gears 4+).*
 6. **Orange Counter-Steer Bar (Bottom of Screen):** Bound to `[FH6SmartShift.IsCounterSteering]` and `[FH6SmartShift.CounterSteerSeverity]`. Active exclusively in RWD and AWD cars above `20 km/h` when `OversteerSeverity > 0.30`, steering input `|Steer| / 127.0 > 0.15`, yaw velocity `|AngularVelocityY| > 0.30`, and steering direction is opposite to yaw rotation. Never activates in FWD cars.
 7. **System Clock (`18:33`):** Displays current local system time in the bottom-left corner.
-8. **Gears 1–10 Calibration Matrix (Right Side of Screen):** Bound to `Gear1Text..Gear10Text` and `Gear1Color..Gear10Color`. When paused or in menus (`IsRaceOn == 0`), `ResetOutputs()` turns all gears red `(-)` (`#E74C3C`) until returning to the road.
+8. **Gears 1–10 Calibration Matrix (Right Side of Screen):** Bound to `Gear1Text..Gear10Text` and `Gear1Color..Gear10Color`.
+   * **How to teach a gear:** Accelerate at full throttle (WOT) and pull the gear all the way to the rev limiter until it turns **Blue `(R)`**. Once you shift up and lock the next gear (`N+1`), the previous gear will automatically turn **Green `(P)`** or **`(L)`**.
+   * **Behavior in menus & pause:** When paused or in garage menus (`IsRaceOn == 0`), `ResetOutputs()` turns all gears red **`(-)`** (`#E74C3C`) until you return to the road.
 
 | Designation | Color | Hex Code | Actual Condition in C# Code |
 | :--- | :--- | :--- | :--- |
