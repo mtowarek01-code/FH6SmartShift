@@ -49,7 +49,7 @@ Additionally, the system provides chassis dynamics telemetry for RWD and AWD veh
 ├── FH6SmartShift.csproj              # .NET Framework 4.8 (C# 7.3) project file with DeployToSimHub target
 ├── FH6SmartShift.dll                 # Compiled library ready to be pasted into SimHub
 ├── FH6SmartShift_Dashboard_EN.jpg    # Annotated dashboard infographic
-├── Dashboard/                        # Folder containing the dedicated SimHub dashboard
+├── DashTemplates.ZIM                 # Folder containing the dedicated SimHub dashboard
 ├── README.md                         # Online repository documentation
 └── README.pdf                        # Printable offline user manual & property reference
 ```
