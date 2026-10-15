@@ -1,0 +1,264 @@
+<!DOCTYPE html>
+<html lang="pl">
+<head>
+<meta charset="UTF-8">
+<title>FH6SmartShift - Dashboard Infographic</title>
+<style>
+  * { box-sizing: border-box; }
+  body {
+    background: #0d1117;
+    color: #e6edf3;
+    font-family: 'Segoe UI', Arial, sans-serif;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    margin: 0;
+    padding: 16px;
+  }
+  .controls {
+    margin-bottom: 14px;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px;
+    justify-content: center;
+  }
+  button {
+    background: #238636;
+    color: white;
+    border: none;
+    padding: 9px 18px;
+    border-radius: 6px;
+    font-weight: 600;
+    cursor: pointer;
+    font-size: 14px;
+    transition: opacity 0.15s;
+  }
+  button:hover { opacity: 0.9; }
+  button.secondary { background: #1f6feb; }
+  button.download { background: #d29922; color: #0d1117; font-weight: 700; }
+  .canvas-wrap {
+    background: #161b22;
+    border: 1px solid #30363d;
+    border-radius: 12px;
+    padding: 16px;
+    box-shadow: 0 16px 40px rgba(0,0,0,0.6);
+    width: 100%;
+    max-width: 1400px;
+  }
+  svg {
+    width: 100%;
+    height: auto;
+    display: block;
+    background: #161b22;
+    border-radius: 8px;
+  }
+  .mono-num { font-family: 'Consolas', 'Courier New', monospace; }
+  .sans-ui { font-family: 'Segoe UI', Arial, sans-serif; }
+  .call-title { font-family: 'Segoe UI', Arial, sans-serif; font-size: 15.5px; font-weight: 700; fill: #ffffff; }
+  .call-sub { font-family: 'Consolas', 'Courier New', monospace; font-size: 12.5px; fill: #58a6ff; }
+  .call-desc { font-family: 'Segoe UI', Arial, sans-serif; font-size: 12.5px; fill: #8b949e; }
+  .line { stroke: #f85149; stroke-width: 2.4; fill: none; stroke-linecap: round; stroke-linejoin: round; }
+  .dot { fill: #f85149; stroke: #000000; stroke-width: 1.5; }
+</style>
+</head>
+<body>
+
+<div class="controls">
+  <button onclick="setLang('pl')">🇵🇱 Podpisy PL</button>
+  <button class="secondary" onclick="setLang('en')">🇬🇧 Captions EN (Reddit / GitHub)</button>
+  <button class="download" onclick="downloadPNG()">💾 Pobierz gotowy plik PNG (2760×1380)</button>
+</div>
+
+<div class="canvas-wrap">
+<svg id="infographic-svg" viewBox="0 0 1380 690" xmlns="http://www.w3.org/2000/svg">
+  <!-- TŁO CAŁEJ PLANSZY (Dla eksportu PNG) -->
+  <rect width="1380" height="690" rx="10" fill="#161b22"/>
+
+  <!-- EKRAN DASHBOARDU (Centralny) -->
+  <rect x="290" y="145" width="800" height="365" rx="6" fill="#000000" stroke="#30363d" stroke-width="2.5"/>
+
+  <!-- 12 DIOD LED U GÓRY -->
+  <g transform="translate(0, 202)">
+    <circle cx="333"  cy="0" r="20" fill="#7f7f7f" stroke="#ffffff" stroke-width="3.5"/>
+    <circle cx="398"  cy="0" r="20" fill="#7f7f7f" stroke="#ffffff" stroke-width="3.5"/>
+    <circle cx="463"  cy="0" r="20" fill="#7f7f7f" stroke="#ffffff" stroke-width="3.5"/>
+    <circle cx="528"  cy="0" r="20" fill="#7f7f7f" stroke="#ffffff" stroke-width="3.5"/>
+    <circle cx="593"  cy="0" r="20" fill="#7f7f7f" stroke="#ffffff" stroke-width="3.5"/>
+    <circle cx="658"  cy="0" r="20" fill="#7f7f7f" stroke="#ffffff" stroke-width="3.5"/>
+    <circle cx="723"  cy="0" r="20" fill="#7f7f7f" stroke="#ffffff" stroke-width="3.5"/>
+    <circle cx="788"  cy="0" r="20" fill="#7f7f7f" stroke="#ffffff" stroke-width="3.5"/>
+    <circle cx="853"  cy="0" r="20" fill="#7f7f7f" stroke="#ffffff" stroke-width="3.5"/>
+    <circle cx="918"  cy="0" r="20" fill="#7f7f7f" stroke="#ffffff" stroke-width="3.5"/>
+    <circle cx="983"  cy="0" r="20" fill="#7f7f7f" stroke="#ffffff" stroke-width="3.5"/>
+    <circle cx="1048" cy="0" r="20" fill="#7f7f7f" stroke="#ffffff" stroke-width="3.5"/>
+  </g>
+
+  <!-- CENTRALNE WSKAŹNIKI: SPEED (51), GEAR (1), RPM (5055) -->
+  <text x="472" y="385" class="mono-num" font-size="62" font-weight="bold" fill="#ffffff">51</text>
+  <text x="602" y="438" class="mono-num" font-size="182" font-weight="bold" fill="#ffffff">1</text>
+  <text x="728" y="385" class="mono-num" font-size="62" font-weight="bold" fill="#ffffff">5055</text>
+
+  <!-- LEWY DÓŁ: 100.0, 18:33, SLIP (Proporcjonalny krój Segoe UI i wyraźny odstęp) -->
+  <text x="302" y="438" class="sans-ui" font-size="29" fill="#ffffff">100.0</text>
+  <text x="303" y="497" class="sans-ui" font-size="50" fill="#ffffff">18:33</text>
+  <text x="438" y="496" class="sans-ui" font-size="29" font-weight="600" fill="#ffff00">SLIP</text>
+
+  <!-- POMARAŃCZOWY PASEK KONTROWANIA -->
+  <rect x="558" y="472" width="194" height="26" fill="#181818" stroke="#282828" stroke-width="1"/>
+  <rect x="558" y="472" width="76" height="26" fill="#ff9900"/>
+
+  <!-- MATRYCA BIEGÓW 1-10 (PRAWA STRONA - DWIE CZYTELNE KOLUMNY) -->
+  <g class="sans-ui" font-size="25" font-weight="500">
+    <!-- Kolumna 1 (Biegi 1-5) -->
+    <text x="905" y="294" fill="#4CAF50">1: (L)</text>
+    <text x="905" y="334" fill="#4CAF50">2: (L)</text>
+    <text x="905" y="374" fill="#4CAF50">3: (L)</text>
+    <text x="905" y="414" fill="#3498DB">4: (R)</text>
+    <text x="905" y="454" fill="#E74C3C">5: (-)</text>
+
+    <!-- Kolumna 2 (Biegi 6-10) -->
+    <text x="1002" y="294" fill="#E74C3C">6: (-)</text>
+    <text x="1002" y="334" fill="#E74C3C">7: (-)</text>
+    <text x="1002" y="374" fill="#E74C3C">8: (-)</text>
+    <text x="1002" y="414" fill="#E74C3C">9: (-)</text>
+    <text x="988"  y="454" fill="#E74C3C">10: (-)</text>
+  </g>
+
+  <!-- ==================== LINIE WSKAZUJĄCE I PODPISY ==================== -->
+
+  <!-- 1. Prędkość (51) - Góra Lewo -->
+  <polyline points="505,328 455,80 435,80" class="line"/>
+  <circle cx="505" cy="328" r="4.5" class="dot"/>
+  <text x="160" y="62" class="call-title" id="t-spd">Vehicle Speed</text>
+  <text x="160" y="82" class="call-sub">[DataCorePlugin.GameData.NewData.SpeedKmh]</text>
+  <text x="160" y="101" class="call-desc" id="d-spd">Current speed readout (km/h or mph)</text>
+
+  <!-- 2. Bieg (1) - Góra Środek -->
+  <polyline points="650,285 650,80 670,80" class="line"/>
+  <circle cx="650" cy="285" r="4.5" class="dot"/>
+  <text x="678" y="62" class="call-title" id="t-gear">Current Gear</text>
+  <text x="678" y="82" class="call-sub">[DataCorePlugin.GameData.NewData.Gear]</text>
+  <text x="678" y="101" class="call-desc" id="d-gear">Currently engaged transmission gear</text>
+
+  <!-- 3. Pasek LED - Góra Prawo -->
+  <polyline points="1048,202 1095,110 1112,110" class="line"/>
+  <circle cx="1048" cy="202" r="4.5" class="dot"/>
+  <text x="1120" y="92" class="call-title" id="t-led">12-Segment Predictive Shift Light</text>
+  <text x="1120" y="112" class="call-sub">[FH6SmartShift.RevLimiterProximity]</text>
+  <text x="1120" y="131" class="call-desc" id="d-led">Includes dynamic driver reaction-time buffer</text>
+
+  <!-- 4. Postęp mapowania (100.0) - Lewo Środek -->
+  <polyline points="300,425 255,345 238,345" class="line"/>
+  <circle cx="300" cy="425" r="4.5" class="dot"/>
+  <text x="18" y="326" class="call-title" id="t-map">Live Dyno Mapping Progress (%)</text>
+  <text x="18" y="346" class="call-sub">[FH6SmartShift.LiveMappingProgress]</text>
+  <text x="18" y="365" class="call-desc" id="d-map">Populated WOT power bands in active range</text>
+
+  <!-- 5. Godzina (18:33) - Dół Lewo -->
+  <polyline points="355,503 310,585 292,585" class="line"/>
+  <circle cx="355" cy="503" r="4.5" class="dot"/>
+  <text x="55" y="566" class="call-title" id="t-clk">System Clock</text>
+  <text x="55" y="586" class="call-sub">[SystemInfoPlugin.Time]</text>
+  <text x="55" y="605" class="call-desc" id="d-clk">Current local system time</text>
+
+  <!-- 6. SLIP - Dół Lewo-Środek -->
+  <polyline points="468,503 468,642 485,642" class="line"/>
+  <circle cx="468" cy="503" r="4.5" class="dot"/>
+  <text x="493" y="623" class="call-title" id="t-slip">Tire Slip / High-G Warning</text>
+  <text x="493" y="643" class="call-sub">[FH6SmartShift.IsGripLost]</text>
+  <text x="493" y="662" class="call-desc" id="d-slip">Triggers at &gt; 1.25 G or driven wheel slip &gt; 0.30</text>
+
+  <!-- 7. Pasek kontrowania - Dół Środek -->
+  <polyline points="605,500 635,558 652,558" class="line"/>
+  <circle cx="605" cy="500" r="4.5" class="dot"/>
+  <text x="660" y="540" class="call-title" id="t-cs">Live Counter-Steer Bar (RWD/AWD)</text>
+  <text x="660" y="560" class="call-sub">IsCounterSteering + CounterSteerSeverity</text>
+  <text x="660" y="579" class="call-desc" id="d-cs">Shows steering counter-input during oversteer</text>
+
+  <!-- 8. Tło alarmowe (Background Shift Flash) - Dół Prawo -->
+  <polyline points="735,465 895,642 912,642" class="line"/>
+  <circle cx="735" cy="465" r="4.5" class="dot"/>
+  <text x="920" y="623" class="call-title" id="t-bg">Shift Flash Alert Background</text>
+  <text x="920" y="643" class="call-sub">RevLimiterProximity == 1.0</text>
+  <text x="920" y="662" class="call-desc" id="d-bg">Flashes when RPM hits buffered ShiftTriggerRpm</text>
+
+  <!-- 9. RPM (5055) - Pionowo w dół przez czystą przestrzeń, bez przecinania biegów! -->
+  <polyline points="805,398 805,485 1095,485 1112,485" class="line"/>
+  <circle cx="805" cy="398" r="4.5" class="dot"/>
+  <text x="1120" y="466" class="call-title" id="t-rpm">Engine Speed (RPM)</text>
+  <text x="1120" y="486" class="call-sub">[DataCorePlugin.GameData.NewData.Rpms]</text>
+  <text x="1120" y="505" class="call-desc" id="d-rpm">Live engine revolutions per minute</text>
+
+  <!-- 10. Matryca biegów 1-10 - Prawo Środek -->
+  <polyline points="1072,370 1100,315 1115,315" class="line"/>
+  <circle cx="1072" cy="370" r="4.5" class="dot"/>
+  <text x="1122" y="296" class="call-title" id="t-mat">Gears 1–10 Calibration Matrix</text>
+  <text x="1122" y="316" class="call-sub">Gear1Text..10Text + Gear1Color..10Color</text>
+  <text x="1122" y="335" class="call-desc" id="d-mat">(P) Math Peak | (L) Limiter | (R) Ratio | (-) Unmapped</text>
+</svg>
+</div>
+
+<script>
+const labels = {
+  pl: {
+    led: ["12-Segmentowy Pasek Shift Light", "Uwzględnia dynamiczny bufor reakcji kierowcy"],
+    spd: ["Prędkość Pojazdu (Speed)", "Aktualna prędkość w km/h lub mph"],
+    gear: ["Aktualny Bieg (Gear)", "Bieżące przełożenie skrzyni biegów"],
+    map: ["Postęp Mapowania Hamowni (%)", "Zapełnienie koszyków mocy przy pełnym gazie"],
+    clk: ["Zegar Systemowy", "Aktualny czas lokalny"],
+    slip: ["Ostrzeżenie o Uślizgu / Przeciążeniu", "Świeci przy > 1.25 G lub uślizgu napędowym > 0.30"],
+    cs: ["Pasek Kontrowania Kierownicą (RWD/AWD)", "Aktywny podczas nadsterowności i kontry kierownicą"],
+    bg: ["Alarmowe Tło Zmiany Biegu", "Błyska, gdy obroty osiągną próg ShiftTriggerRpm"],
+    rpm: ["Obroty Silnika (RPM)", "Bieżąca prędkość obrotowa silnika"],
+    mat: ["Matryca Kalibracji Biegów 1–10", "(P) Optymalny | (L) Limiter | (R) Przełożenie | (-) Brak"]
+  },
+  en: {
+    led: ["12-Segment Predictive Shift Light", "Includes dynamic driver reaction-time buffer"],
+    spd: ["Vehicle Speed", "Current speed readout (km/h or mph)"],
+    gear: ["Current Gear", "Currently engaged transmission gear"],
+    map: ["Live Dyno Mapping Progress (%)", "Populated WOT power bands in active range"],
+    clk: ["System Clock", "Current local system time"],
+    slip: ["Tire Slip / High-G Warning", "Triggers at > 1.25 G or driven wheel slip > 0.30"],
+    cs: ["Live Counter-Steer Bar (RWD/AWD)", "Shows steering counter-input during oversteer"],
+    bg: ["Shift Flash Alert Background", "Flashes when RPM hits buffered ShiftTriggerRpm"],
+    rpm: ["Engine Speed (RPM)", "Live engine revolutions per minute"],
+    mat: ["Gears 1–10 Calibration Matrix", "(P) Math Peak | (L) Limiter | (R) Ratio | (-) Unmapped"]
+  }
+};
+
+let currentLang = 'en';
+
+function setLang(l) {
+  currentLang = l;
+  for (const key in labels[l]) {
+    document.getElementById('t-' + key).textContent = labels[l][key][0];
+    document.getElementById('d-' + key).textContent = labels[l][key][1];
+  }
+}
+
+function downloadPNG() {
+  const svgEl = document.getElementById('infographic-svg');
+  const serializer = new XMLSerializer();
+  let svgString = serializer.serializeToString(svgEl);
+  const svgBlob = new Blob([svgString], {type: 'image/svg+xml;charset=utf-8'});
+  const url = URL.createObjectURL(svgBlob);
+
+  const img = new Image();
+  img.onload = function() {
+    const canvas = document.createElement('canvas');
+    canvas.width = 2760;
+    canvas.height = 1380;
+    const ctx = canvas.getContext('2d');
+    ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+    URL.revokeObjectURL(url);
+
+    const a = document.createElement('a');
+    a.download = 'FH6SmartShift_Dashboard_' + currentLang.toUpperCase() + '.png';
+    a.href = canvas.toDataURL('image/png');
+    a.click();
+  };
+  img.src = url;
+}
+</script>
+</body>
+</html>
