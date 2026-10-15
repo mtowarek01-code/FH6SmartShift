@@ -174,6 +174,8 @@ Below is a detailed breakdown of how each element on the included dashboard oper
 
 Distributed under the **GNU General Public License v3.0 (GPLv3)**.
 
+---
+
 If **FH6SmartShift** helped you shave tenths off your lap times and dial in your gear ratios in Forza Horizon 6, you can support the project's development:
 
 👉 **[Support the creator on Buy Me a Coffee](https://buymeacoffee.com/mtowarek01d)** (`https://buymeacoffee.com/mtowarek01d`)
