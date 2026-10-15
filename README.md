@@ -131,7 +131,7 @@ Below is a detailed breakdown of how each element on the included dashboard oper
 | `OversteerSeverity` | `double` | `0.0–1.0` rear-axle slip scale for RWD/AWD above `20 km/h` (70% rear slip angle `> 0.12`, 30% combined slip `> 0.65`). |
 | `IsCounterSteering` | `bool` | `true` when `CounterSteerSeverity > 0.10` (never activates for FWD cars). |
 | `CounterSteerSeverity` | `double` | Smoothed (`tau = 0.08 s`) `0.0–1.0` steering input above 15% threshold during counter-steering. |
-| `BodySlipAngle` | `double` | Chassis slip angle in degrees calculated from `VelocityX` vs `|VelocityZ|` (above `5 km/h`). |
+| `BodySlipAngle` | `double` | Chassis slip angle in degrees calculated from `VelocityX` vs `abs(VelocityZ)` (above `5 km/h`). |
 | `AeroBottomingWarning` | `bool` | `true` when any damper reaches `NormalizedSuspensionTravel >= 0.98` above `200 km/h`. |
 | `Gear1Text`..`Gear10Text` | `string` | Status text labels for gears 1–10. |
 | `Gear1Color`..`Gear10Color` | `string` | Status Hex color codes for gears 1–10. |
