@@ -1,15 +1,20 @@
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
+using System.Globalization;
+using System.IO;
+using System.Text;
+using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
 using GameReaderCommon;
+using Newtonsoft.Json;
 using SimHub.Plugins;
 
 namespace FH6SmartShift
 {
     [PluginName("FH6SmartShift")]
-    [PluginDescription("The Architect's Masterpiece - v1.0.0 (Ultimate Monolith, Zero Stutter & Top Gear Fix)")]
+    [PluginDescription("The Architect's Masterpiece - v1.0.0 (Ultimate Monolith, Zero Stutter & Smooth 12-LED Engine)")]
     [PluginAuthor("mtowarek01")]
     public class FH6SmartShift : IPlugin, IDataPlugin
     {
@@ -128,6 +133,8 @@ namespace FH6SmartShift
         private Stopwatch _appTime = new Stopwatch();
         private Stopwatch _dtStopwatch = new Stopwatch();
         private bool _shiftLightActive = false;
+        private double _smoothedLedProximity = 0.0;
+        private int _currentLedStage = 0;
         private bool _lastDownshiftSuggested = false;
 
         private bool _isDataDirty = false;
@@ -160,6 +167,8 @@ namespace FH6SmartShift
             public double BodySlipAngle = 0;
             public double MaxUsableRpm = 0;
             public double RevLimiterProximity = 0;
+            public int LedActiveCount = 0;
+            public bool ShiftLightFlash = false;
             public double ShiftTriggerRpm = 0;
             public double RpmAtMaxPower = 0;
             public double RpmAtMaxTorque = 0;
@@ -182,19 +191,26 @@ namespace FH6SmartShift
         
         private Outputs _out = new Outputs();
 
+        private static string GetReportFilePath()
+        {
+            string dir = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "PluginsData", "Common");
+            if (!Directory.Exists(dir)) Directory.CreateDirectory(dir);
+            return Path.Combine(dir, "FH6SmartShift_GarageReport.html");
+        }
+
         public void Init(PluginManager pluginManager)
         {
             try {
-                string dir = System.IO.Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "PluginsData", "Common");
-                string p = System.IO.Path.Combine(dir, "FH6SmartShift_fh6SmartShiftingData.json");
-                if (System.IO.File.Exists(p)) {
+                string dir = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "PluginsData", "Common");
+                string p = Path.Combine(dir, "FH6SmartShift_fh6SmartShiftingData.json");
+                if (File.Exists(p)) {
                     string todayBak = p + ".bak_" + DateTime.Now.ToString("yyyyMMdd");
-                    if (!System.IO.File.Exists(todayBak)) {
-                        System.IO.File.Copy(p, todayBak, true);
+                    if (!File.Exists(todayBak)) {
+                        File.Copy(p, todayBak, true);
                         Debug.WriteLine($"[FH6SmartShift] Utworzono dzienna kopie zapasowa: {todayBak}");
                     }
                     
-                    var dirInfo = new System.IO.DirectoryInfo(dir);
+                    var dirInfo = new DirectoryInfo(dir);
                     var baks = dirInfo.GetFiles("FH6SmartShift_fh6SmartShiftingData.json.bak_*");
                     if (baks.Length > 3) {
                         Array.Sort(baks, (a, b) => b.CreationTime.CompareTo(a.CreationTime));
@@ -231,6 +247,12 @@ namespace FH6SmartShift
 
             _snapshotStore = CloneCarStore(_store);
             
+            try { WriteHtmlGarageReport(_snapshotStore, ""); }
+            catch (Exception ex) { Debug.WriteLine("[FH6SmartShift] Initial HTML report error: " + ex.Message); }
+
+            // Automatyczna aktualizacja i optymalizacja wyrażeń LED w zainstalowanych dashboardach (.djson)
+            Task.Run(() => UpgradeDashTemplatesIfPresent());
+            
             _appTime.Start();
             _dtStopwatch.Start();
             
@@ -238,9 +260,12 @@ namespace FH6SmartShift
             pluginManager.AddAction("ResetAllCarsMemory", this.GetType(), (a, b) => Interlocked.Exchange(ref _resetAllRequested, 1));
             pluginManager.AddAction("ResetLimitGears", this.GetType(), (a, b) => Interlocked.Exchange(ref _resetLimitGearsRequested, 1));
             pluginManager.AddAction("ResetGearRatios", this.GetType(), (a, b) => Interlocked.Exchange(ref _resetRatiosRequested, 1));
+            pluginManager.AddAction("OpenDynoReport", this.GetType(), (a, b) => OpenGarageReportInBrowser());
 
             this.AttachDelegate("MaxUsableRpm", () => _out.MaxUsableRpm);
             this.AttachDelegate("RevLimiterProximity", () => _out.RevLimiterProximity);
+            this.AttachDelegate("LedActiveCount", () => _out.LedActiveCount);
+            this.AttachDelegate("ShiftLightFlash", () => _out.ShiftLightFlash);
             this.AttachDelegate("CurrentCarKey", () => _out.CarKey);
             this.AttachDelegate("IsLearningComplete", () => _out.IsLearningComplete);
             this.AttachDelegate("ShiftTriggerRpm", () => _out.ShiftTriggerRpm);
@@ -279,6 +304,53 @@ namespace FH6SmartShift
             }
         }
 
+        private static void UpgradeDashTemplatesIfPresent()
+        {
+            try
+            {
+                string dashRoot = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "DashTemplates");
+                if (!Directory.Exists(dashRoot)) return;
+
+                string[] targetFiles = {
+                    Path.Combine(dashRoot, "FH6SmartShift", "FH6SmartShift.djson"),
+                    Path.Combine(dashRoot, "FH6SmartShift MPH", "FH6SmartShift MPH.djson")
+                };
+
+                foreach (string djsonPath in targetFiles)
+                {
+                    if (!File.Exists(djsonPath)) continue;
+
+                    string content = File.ReadAllText(djsonPath, Encoding.UTF8);
+                    string original = content;
+
+                    // Zamiana progów ułamkowych [FH6SmartShift.RevLimiterProximity] > 0.xx na stabilny indeks diody [FH6SmartShift.LedActiveCount] >= 1..12
+                    content = Regex.Replace(
+                        content,
+                        @"\[FH6SmartShift\.RevLimiterProximity\]\s*>=?\s*(0\.\d+)",
+                        match =>
+                        {
+                            if (double.TryParse(match.Groups[1].Value, NumberStyles.Float, CultureInfo.InvariantCulture, out double thresh))
+                            {
+                                int stage = Math.Max(1, Math.Min(12, (int)Math.Round(thresh * 12.0)));
+                                return $"[FH6SmartShift.LedActiveCount] >= {stage}";
+                            }
+                            return match.Value;
+                        });
+
+                    if (content != original)
+                    {
+                        File.Copy(djsonPath, djsonPath + ".pre_led_upgrade.bak", true);
+                        File.WriteAllText(djsonPath, content, Encoding.UTF8);
+                        Debug.WriteLine($"[FH6SmartShift] Zaktualizowano pasek LED w dashboardzie: {djsonPath}");
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Debug.WriteLine($"[FH6SmartShift] Auto-upgrade dashboardu pominiety: {ex.Message}");
+            }
+        }
+
         public void End(PluginManager pluginManager) 
         {
             Stopwatch sw = Stopwatch.StartNew();
@@ -293,8 +365,463 @@ namespace FH6SmartShift
                         UpdateSnapshotWithCurrentCar();
                     }
                     this.SaveCommonSettings(StoreKey, _snapshotStore); 
+                    try { WriteHtmlGarageReport(_snapshotStore, _key); }
+                    catch (Exception ex) { Debug.WriteLine("[FH6SmartShift] End HTML report error: " + ex.Message); }
                 } 
             }
+        }
+
+        private void OpenGarageReportInBrowser()
+        {
+            Task.Run(() =>
+            {
+                try
+                {
+                    CarStore snapshotCopy;
+                    string activeKey;
+                    lock (_lock)
+                    {
+                        if (!string.IsNullOrEmpty(_key))
+                        {
+                            SaveEngineProfileToStore();
+                            UpdateSnapshotWithCurrentCar();
+                        }
+                        snapshotCopy = CloneCarStore(_snapshotStore);
+                        activeKey = _key ?? "";
+                    }
+
+                    string reportPath = GetReportFilePath();
+                    WriteHtmlGarageReport(snapshotCopy, activeKey);
+
+                    Process.Start(new ProcessStartInfo
+                    {
+                        FileName = reportPath,
+                        UseShellExecute = true
+                    });
+                }
+                catch (Exception ex)
+                {
+                    Debug.WriteLine("[FH6SmartShift] OpenDynoReport failed: " + ex.Message);
+                }
+            });
+        }
+
+        private static void WriteHtmlGarageReport(CarStore store, string activeCarKey)
+        {
+            string jsonPayload = JsonConvert.SerializeObject(store ?? new CarStore());
+            string safeActiveKey = JsonConvert.SerializeObject(activeCarKey ?? "");
+            string reportPath = GetReportFilePath();
+
+            string html = @"<!DOCTYPE html>
+<html lang=""en"">
+<head>
+<meta charset=""UTF-8"">
+<title>FH6SmartShift — Virtual Dyno &amp; Gearbox Inspector</title>
+<style>
+  * { box-sizing: border-box; }
+  body {
+    background: #0d1117;
+    color: #e6edf3;
+    font-family: 'Segoe UI', -apple-system, BlinkMacSystemFont, Arial, sans-serif;
+    margin: 0;
+    padding: 24px;
+  }
+  .container { max-width: 1200px; margin: 0 auto; }
+  .header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 16px;
+    background: #161b22;
+    border: 1px solid #30363d;
+    border-radius: 10px;
+    padding: 18px 24px;
+    margin-bottom: 20px;
+  }
+  .header h1 { margin: 0; font-size: 21px; color: #fff; }
+  .controls { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
+  .file-label {
+    background: #238636;
+    color: #fff;
+    padding: 9px 15px;
+    border-radius: 6px;
+    font-weight: 600;
+    cursor: pointer;
+    font-size: 13.5px;
+  }
+  .file-label:hover { background: #2ea043; }
+  input[type=""file""] { display: none; }
+  select {
+    background: #0d1117;
+    color: #e6edf3;
+    border: 1px solid #30363d;
+    padding: 9px 14px;
+    border-radius: 6px;
+    font-size: 14px;
+    font-weight: 600;
+    min-width: 310px;
+  }
+  .profile-banner {
+    background: #161b22;
+    border-left: 4px solid #2f81f7;
+    border-top: 1px solid #30363d;
+    border-right: 1px solid #30363d;
+    border-bottom: 1px solid #30363d;
+    border-radius: 8px;
+    padding: 16px 20px;
+    margin-bottom: 20px;
+    font-size: 15px;
+    line-height: 1.5;
+  }
+  .copy-btn {
+    background: #21262d;
+    color: #c9d1d9;
+    border: 1px solid #30363d;
+    padding: 5px 12px;
+    border-radius: 5px;
+    cursor: pointer;
+    font-size: 12px;
+    float: right;
+  }
+  .copy-btn:hover { background: #30363d; }
+  .table-wrap {
+    background: #ffffff;
+    color: #1f2328;
+    border-radius: 8px;
+    overflow: hidden;
+    box-shadow: 0 8px 24px rgba(0,0,0,0.4);
+    margin-bottom: 24px;
+  }
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 14.5px;
+  }
+  th {
+    background: #f6f8fa;
+    color: #1f2328;
+    font-weight: 600;
+    text-align: left;
+    padding: 10px 14px;
+    border: 1px solid #d0d7de;
+  }
+  td {
+    padding: 9px 14px;
+    border: 1px solid #d0d7de;
+  }
+  tr:nth-child(even) td { background: #fcfcfd; }
+  .dot {
+    display: inline-block;
+    width: 14px;
+    height: 14px;
+    border-radius: 50%;
+    vertical-align: middle;
+    margin-right: 6px;
+    border: 1px solid rgba(0,0,0,0.35);
+  }
+  .dot-green { background: #2da44e; }
+  .dot-orange { background: #f39c12; }
+  .dot-yellow { background: #d4ac0d; }
+  .dot-blue { background: #1f6feb; }
+  .dot-red { background: #cf222e; }
+  .chart-card {
+    background: #161b22;
+    border: 1px solid #30363d;
+    border-radius: 10px;
+    padding: 20px;
+  }
+  .chart-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 12px;
+  }
+  .chart-header h3 { margin: 0; font-size: 16px; color: #fff; }
+  .legend { font-size: 13px; color: #8b949e; display: flex; gap: 16px; }
+  .leg-hp { color: #3fb950; font-weight: 700; }
+  .leg-nm { color: #58a6ff; font-weight: 700; }
+  canvas { width: 100%; height: 320px; display: block; }
+</style>
+</head>
+<body>
+
+<div class=""container"">
+  <div class=""header"">
+    <h1>🏎️ FH6SmartShift — Virtual Dyno &amp; Gearbox Inspector</h1>
+    <div class=""controls"">
+      <select id=""carSelect"" onchange=""renderCar(this.value)""></select>
+      <label class=""file-label"">
+        📂 Load External JSON
+        <input type=""file"" id=""jsonFile"" accept="".json"">
+      </label>
+    </div>
+  </div>
+
+  <div class=""profile-banner"" id=""profileSummary"">
+    No car profiles saved yet. Drive a car at wide-open throttle in Forza Horizon 6 to populate the Virtual Dyno database.
+  </div>
+
+  <div class=""table-wrap"">
+    <table>
+      <thead>
+        <tr>
+          <th>Gear</th>
+          <th>Gear Ratio (RpmPerRadS)</th>
+          <th>RPM Drop on N+1 Upshift (dropRatio)</th>
+          <th>Next Gear Landing RPM</th>
+          <th>Saved JSON Threshold (Rpm)</th>
+          <th>Physical Shift Target (OptimalShiftRpm)</th>
+          <th>Dashboard Status</th>
+        </tr>
+      </thead>
+      <tbody id=""gearTableBody""></tbody>
+    </table>
+  </div>
+
+  <div class=""chart-card"">
+    <div class=""chart-header"">
+      <h3>📈 401-Band Virtual Dyno Curve (Power HP &amp; Torque Nm)</h3>
+      <div class=""legend"">
+        <span class=""leg-hp"">● Engine Power (HP)</span>
+        <span class=""leg-nm"">● Engine Torque (Nm)</span>
+      </div>
+    </div>
+    <canvas id=""dynoCanvas"" width=""1120"" height=""320""></canvas>
+  </div>
+</div>
+
+<script>
+let dbData = " + jsonPayload + @";
+let defaultCarKey = " + safeActiveKey + @";
+
+document.getElementById('jsonFile').addEventListener('change', function(e) {
+  const file = e.target.files[0];
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = function(evt) {
+    try {
+      dbData = JSON.parse(evt.target.result);
+      populateCarSelect();
+    } catch (err) {
+      alert('Invalid JSON file: ' + err.message);
+    }
+  };
+  reader.readAsText(file);
+});
+
+function populateCarSelect() {
+  const sel = document.getElementById('carSelect');
+  sel.innerHTML = '';
+  const allKeys = new Set([
+    ...Object.keys(dbData.EngineProfiles || {}),
+    ...Object.keys(dbData.GearRatios || {})
+  ]);
+  const keys = Array.from(allKeys).sort();
+
+  keys.forEach(k => {
+    const opt = document.createElement('option');
+    opt.value = k;
+    const dtMap = {'DT0':'FWD', 'DT1':'RWD', 'DT2':'AWD'};
+    let label = k;
+    const parts = k.split('_');
+    if (parts.length === 4) {
+      label = `Car #${parts[0]} | ${parts[1]} | ${dtMap[parts[2]] || parts[2]} | Gauge ${parts[3].replace('R','')} RPM (${k})`;
+    }
+    opt.textContent = label;
+    sel.appendChild(opt);
+  });
+
+  if (keys.length > 0) {
+    const target = (defaultCarKey && keys.includes(defaultCarKey)) ? defaultCarKey : keys[0];
+    sel.value = target;
+    renderCar(target);
+  }
+}
+
+function renderCar(key) {
+  const ep = (dbData.EngineProfiles && dbData.EngineProfiles[key]) || {};
+  const ratios = (dbData.GearRatios && dbData.GearRatios[key]) || {};
+  const adv = (dbData.AdvancedGears && dbData.AdvancedGears[key]) || {};
+
+  const gaugeMatch = key.match(/_R(\d+)$/);
+  const gaugeRpm = gaugeMatch ? parseInt(gaugeMatch[1], 10) : 8000;
+
+  const kw = (ep.MaxPower || 0) / 1000.0;
+  const hp = (ep.MaxPower || 0) / 745.7;
+  const nm = ep.MaxTorque || 0;
+  const rpmP = ep.RpmAtMaxPower || 0;
+  const rpmT = ep.RpmAtMaxTorque || 0;
+
+  let maxBoostPsi = 0;
+  if (Array.isArray(ep.BoostMap)) {
+    for (let i = 0; i < ep.BoostMap.length; i++) {
+      if (ep.BoostMap[i] > maxBoostPsi) maxBoostPsi = ep.BoostMap[i];
+    }
+  }
+  const maxBoostBar = maxBoostPsi * 0.0689476;
+  const boostText = maxBoostPsi > 0.1
+    ? `${maxBoostPsi.toFixed(2)} psi (~${maxBoostBar.toFixed(2)} bar) of boost`
+    : `Naturally Aspirated (0.0 psi boost)`;
+
+  let maxMappedBand = 0;
+  if (Array.isArray(ep.PowerMap)) {
+    for (let i = 400; i >= 0; i--) {
+      if (ep.PowerMap[i] > 0) { maxMappedBand = i; break; }
+    }
+  }
+  const actualLimiter = (ep.GhostLimiterRpm && ep.GhostLimiterRpm > 0)
+    ? ep.GhostLimiterRpm
+    : Math.max(gaugeRpm, maxMappedBand * 50.0);
+
+  const limiterText = (ep.GhostLimiterRpm && ep.GhostLimiterRpm > 0)
+    ? `and a detected hidden rev limiter (GhostLimiterRpm) at <strong>${ep.GhostLimiterRpm.toFixed(1)} RPM</strong> (on an ${gaugeRpm} RPM gauge cluster).`
+    : `and standard rev limiter up to <strong>${actualLimiter.toFixed(0)} RPM</strong> (on an ${gaugeRpm} RPM gauge cluster).`;
+
+  document.getElementById('profileSummary').innerHTML = `
+    <button class=""copy-btn"" onclick=""copySummary()"">📋 Copy Summary</button>
+    <strong>Engine &amp; Dyno Profile (<code>${key}</code>):</strong>
+    Peak power of <strong>${hp.toFixed(1)} HP (${kw.toFixed(1)} kW)</strong> at <strong>${rpmP.toFixed(0)} RPM</strong>,
+    peak torque of <strong>${nm.toFixed(1)} Nm</strong> at <strong>${rpmT.toFixed(0)} RPM</strong>,
+    <strong>${boostText}</strong>, ${limiterText}
+  `;
+
+  const tbody = document.getElementById('gearTableBody');
+  tbody.innerHTML = '';
+
+  const gearNums = Object.keys(ratios).map(Number).filter(n => ratios[n] > 0).sort((a,b) => a - b);
+  const maxGear = gearNums.length > 0 ? Math.max(...gearNums) : 6;
+
+  for (let g = 1; g <= maxGear; g++) {
+    const rNow = ratios[g] || 0;
+    const rNext = ratios[g + 1] || 0;
+    const gAdv = adv[g];
+
+    let ratioStr = rNow > 0 ? rNow.toFixed(2) : '—';
+    let dropStr = '—';
+    let landStr = '—';
+    let savedStr = '<em>No entry</em>';
+    let physStr = `<em>To limiter (${Math.round(actualLimiter)} RPM)</em>`;
+    let statusHtml = `<span class=""dot dot-red""></span>${g}: (-) <em>(Unmapped)</em>`;
+
+    if (rNow > 0 && !rNext && g === maxGear) {
+      dropStr = '— (Top Gear)';
+    }
+
+    let physTargetVal = 0;
+    if (gAdv && gAdv.Rpm > 0) {
+      savedStr = `${gAdv.Rpm.toFixed(1)} RPM`;
+      if (gAdv.Edg) {
+        physTargetVal = Math.round(actualLimiter - 250.0);
+        physStr = `<strong>${physTargetVal} RPM</strong>`;
+        statusHtml = `<span class=""dot dot-orange""></span>${g}: (L?) <em>(Edge / Unconfirmed)</em>`;
+      } else if (gAdv.Gho) {
+        physTargetVal = Math.round(gAdv.Rpm - 50.0);
+        physStr = `<strong>${physTargetVal} RPM</strong>`;
+        statusHtml = `<span class=""dot dot-green""></span>${g}: (L) <em>(Limiter Confirmed)</em>`;
+      } else if (gAdv.Opt) {
+        physTargetVal = Math.round(gAdv.Rpm);
+        physStr = `<strong>${physTargetVal} RPM</strong>`;
+        statusHtml = `<span class=""dot dot-green""></span>${g}: (P) <em>(Math Peak Optimal)</em>`;
+      } else {
+        physTargetVal = Math.round(gAdv.Rpm);
+        physStr = `<strong>${physTargetVal} RPM</strong>`;
+        statusHtml = `<span class=""dot dot-yellow""></span>${g}: (P?) <em>(Unconfirmed Trigger)</em>`;
+      }
+    } else if (rNow > 0) {
+      statusHtml = `<span class=""dot dot-blue""></span>${g}: (R) <em>(Ratio Locked)</em>`;
+    }
+
+    if (rNow > 0 && rNext > 0) {
+      const dropRatio = rNext / rNow;
+      const dropPct = ((dropRatio - 1.0) * 100.0).toFixed(1);
+      dropStr = `${dropRatio.toFixed(3)} (${dropPct}%)`;
+      const refShift = physTargetVal > 0 ? physTargetVal : actualLimiter;
+      const landRpm = Math.round(refShift * dropRatio);
+      landStr = `~${landRpm} RPM`;
+    }
+
+    const tr = document.createElement('tr');
+    tr.innerHTML = `
+      <td><strong>Gear ${g}</strong></td>
+      <td>${ratioStr}</td>
+      <td>${dropStr}</td>
+      <td>${landStr}</td>
+      <td>${savedStr}</td>
+      <td>${physStr}</td>
+      <td>${statusHtml}</td>
+    `;
+    tbody.appendChild(tr);
+  }
+
+  drawDynoChart(ep);
+}
+
+function drawDynoChart(ep) {
+  const canvas = document.getElementById('dynoCanvas');
+  const ctx = canvas.getContext('2d');
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+  const pMap = ep.PowerMap || [];
+  const tMap = ep.TorqueMap || [];
+  let maxBand = 0;
+  for (let i = 400; i >= 0; i--) { if (pMap[i] > 0) { maxBand = i; break; } }
+
+  if (maxBand === 0) return;
+
+  const padL = 55, padR = 55, padT = 20, padB = 35;
+  const w = canvas.width - padL - padR;
+  const h = canvas.height - padT - padB;
+  const maxRpmPlot = Math.ceil((maxBand * 50 + 500) / 1000) * 1000;
+  const maxHp = Math.max(100, ((ep.MaxPower || 100000) / 745.7) * 1.12);
+  const maxNm = Math.max(100, (ep.MaxTorque || 200) * 1.12);
+
+  ctx.strokeStyle = '#21262d';
+  ctx.lineWidth = 1;
+  for (let r = 1000; r <= maxRpmPlot; r += 1000) {
+    const x = padL + (r / maxRpmPlot) * w;
+    ctx.beginPath(); ctx.moveTo(x, padT); ctx.lineTo(x, padT + h); ctx.stroke();
+    ctx.fillStyle = '#8b949e'; ctx.font = '12px Consolas';
+    ctx.fillText(r + ' RPM', x - 24, padT + h + 22);
+  }
+
+  ctx.strokeStyle = '#58a6ff';
+  ctx.lineWidth = 2.5;
+  ctx.beginPath();
+  let started = false;
+  for (let i = 1; i <= maxBand; i++) {
+    if (tMap[i] <= 0) continue;
+    const x = padL + ((i * 50) / maxRpmPlot) * w;
+    const y = padT + h - (tMap[i] / maxNm) * h;
+    if (!started) { ctx.moveTo(x, y); started = true; } else ctx.lineTo(x, y);
+  }
+  ctx.stroke();
+
+  ctx.strokeStyle = '#3fb950';
+  ctx.lineWidth = 3;
+  ctx.beginPath();
+  started = false;
+  for (let i = 1; i <= maxBand; i++) {
+    if (pMap[i] <= 0) continue;
+    const hp = pMap[i] / 745.7;
+    const x = padL + ((i * 50) / maxRpmPlot) * w;
+    const y = padT + h - (hp / maxHp) * h;
+    if (!started) { ctx.moveTo(x, y); started = true; } else ctx.lineTo(x, y);
+  }
+  ctx.stroke();
+}
+
+function copySummary() {
+  const txt = document.getElementById('profileSummary').innerText.replace('📋 Copy Summary', '').trim();
+  navigator.clipboard.writeText(txt);
+}
+
+populateCarSelect();
+</script>
+</body>
+</html>";
+
+            File.WriteAllText(reportPath, html, Encoding.UTF8);
         }
 
         private CarStore CloneCarStore(CarStore source)
@@ -354,6 +881,7 @@ namespace FH6SmartShift
         private void TriggerAsyncSave()
         {
             CarStore toSave = null;
+            string currentKeyCopy = "";
             lock (_lock)
             {
                 if (!string.IsNullOrEmpty(_key))
@@ -366,13 +894,18 @@ namespace FH6SmartShift
                 if (Interlocked.CompareExchange(ref _saveInFlight, 1, 0) == 0)
                 {
                     toSave = CloneCarStore(_snapshotStore);
+                    currentKeyCopy = _key ?? "";
                     _isDataDirty = false;
                 }
             }
             if (toSave != null)
             {
                 Task.Run(() => { 
-                    try { this.SaveCommonSettings(StoreKey, toSave); } 
+                    try 
+                    { 
+                        this.SaveCommonSettings(StoreKey, toSave); 
+                        WriteHtmlGarageReport(toSave, currentKeyCopy);
+                    } 
                     catch (Exception ex) 
                     { 
                         Debug.WriteLine("FH6SmartShift save failed: " + ex); 
@@ -680,6 +1213,8 @@ namespace FH6SmartShift
                 _out.CarKey = "";
                 _out.MaxUsableRpm = 0;
                 _out.RevLimiterProximity = 0;
+                _out.LedActiveCount = 0;
+                _out.ShiftLightFlash = false;
                 _out.ShiftTriggerRpm = 0;
                 _out.OptimalShiftRpm = 0;
                 _out.DownshiftTriggerRpm = 0;
@@ -702,6 +1237,8 @@ namespace FH6SmartShift
                 _out.EngineMapStatus = "LEARN"; 
                 _out.MapCoverageBar = "[░░░░░░░░░░░░░░░░░░░░]";
                 _shiftLightActive = false;
+                _smoothedLedProximity = 0.0;
+                _currentLedStage = 0;
                 _lastDownshiftSuggested = false;
                 for (int i = 0; i <= 10; i++)
                 {
@@ -762,6 +1299,8 @@ namespace FH6SmartShift
                     _lastLearnedTime = -100;
                     _lastMapScanTime = -100;
                     _smoothedLiveBuffer = 50.0;
+                    _smoothedLedProximity = 0.0;
+                    _currentLedStage = 0;
                     _speedTrendKmhPerS = 0;
                     _lastSpeedKmhForTrend = 0;
                     _climbDownshiftActive = false;
@@ -794,6 +1333,8 @@ namespace FH6SmartShift
                     _lastLearnedTime = -100;
                     _lastMapScanTime = -100;
                     _smoothedLiveBuffer = 50.0;
+                    _smoothedLedProximity = 0.0;
+                    _currentLedStage = 0;
                     _speedTrendKmhPerS = 0;
                     _lastSpeedKmhForTrend = 0;
                     _climbDownshiftActive = false;
@@ -933,6 +1474,8 @@ namespace FH6SmartShift
                     _lastLearnedTime = -100;
                     _lastMapScanTime = -100;
                     _smoothedLiveBuffer = 50.0;
+                    _smoothedLedProximity = 0.0;
+                    _currentLedStage = 0;
                     _speedTrendKmhPerS = 0;
                     _lastSpeedKmhForTrend = 0;
                     _climbDownshiftActive = false;
@@ -1176,6 +1719,9 @@ namespace FH6SmartShift
                 if (currentGear < _lastGear) { _lastDownshiftTime = now; _lastUpshiftTime = -100; _shiftLightActive = false; }
                 else { _lastUpshiftTime = now; _lastDownshiftTime = -100; _shiftLightActive = false; }
                 
+                _smoothedLedProximity = 0.0;
+                _currentLedStage = 0;
+
                 if (_gearStates.TryGetValue(_lastGear, out var oldGs)) { oldGs.RatioSamples = 0; oldGs.RatioHistoryIdx = 0; }
                 if (_gearStates.TryGetValue(currentGear, out var newGs)) { newGs.RatioSamples = 0; newGs.RatioHistoryIdx = 0; }
                 _lastLearnedBand = -1;
@@ -1907,17 +2453,78 @@ namespace FH6SmartShift
                 }
             }
 
-            double visualTrigger = Math.Min(trigger + _smoothedLiveBuffer, actualLimiter);
+            // === PŁYNNY I STABILNY SILNIK PASKA 12 LED (Zero przeskakiwania diod + Anti-Flicker) ===
+            double effectiveTarget = Math.Max(engineIdleRpm + 500.0, trigger);
+            double ledSpan = Math.Max(1200.0, (effectiveTarget - engineIdleRpm) * 0.28);
+            double startLight = Math.Max(engineIdleRpm + 200.0, effectiveTarget - ledSpan);
 
-            if (!isDrivetrainDecoupled && currentRpm >= trigger && accel >= LightWotThreshold) _shiftLightActive = true;
-            if (_shiftLightActive && (isDrivetrainDecoupled || currentRpm < trigger - 250 || accel < LiftThreshold)) _shiftLightActive = false;
+            double rawProximity = 0.0;
+            if (effectiveTarget > startLight && currentGear >= 1 && !isDrivetrainDecoupled)
+            {
+                rawProximity = (currentRpm - startLight) / (effectiveTarget - startLight);
+                if (rawProximity < 0.0) rawProximity = 0.0;
+                if (rawProximity > 1.0) rawProximity = 1.0;
+            }
 
-            double startLight = engineIdleRpm + ((visualTrigger - engineIdleRpm) * 0.75);
-            if (visualTrigger <= startLight || (visualTrigger - startLight) <= 0) _out.RevLimiterProximity = 1.0;
-            else _out.RevLimiterProximity = _shiftLightActive ? 1.0 : (currentRpm <= startLight ? 0.0 : (currentRpm >= visualTrigger ? 1.0 : (currentRpm - startLight) / (visualTrigger - startLight)));
+            if (currentGear < 1 || isDrivetrainDecoupled)
+            {
+                _smoothedLedProximity = 0.0;
+                _currentLedStage = 0;
+                _shiftLightActive = false;
+            }
+            else
+            {
+                bool isPushingWot = accel >= LightWotThreshold && brake < BrakeDeadzone;
+                if (rawProximity >= _smoothedLedProximity)
+                {
+                    double alphaUp = 1.0 - Math.Exp(-_frameDt / 0.015);
+                    _smoothedLedProximity += (rawProximity - _smoothedLedProximity) * alphaUp;
+                }
+                else if (isPushingWot && _currentRpmAccel >= -80.0 && rawProximity > _smoothedLedProximity - 0.06)
+                {
+                    // Blokada cofania diod na pełnym gazie przy chwilowym drgnięciu obrotów na tarkach
+                }
+                else
+                {
+                    double alphaDown = 1.0 - Math.Exp(-_frameDt / 0.080);
+                    _smoothedLedProximity += (rawProximity - _smoothedLedProximity) * alphaDown;
+                }
+            }
+
+            double scaledLeds = _smoothedLedProximity * 12.0;
+            if (scaledLeds >= _currentLedStage + 0.95)
+            {
+                _currentLedStage = Math.Min(12, (int)Math.Floor(scaledLeds + 0.05));
+            }
+            else if (scaledLeds < _currentLedStage - 0.20)
+            {
+                _currentLedStage = Math.Max(0, (int)Math.Floor(scaledLeds + 0.20));
+            }
+
+            if (!isDrivetrainDecoupled && currentRpm >= effectiveTarget && accel >= LightWotThreshold)
+            {
+                _shiftLightActive = true;
+            }
+            if (_shiftLightActive && (isDrivetrainDecoupled || currentRpm < effectiveTarget - 200.0 || accel < LiftThreshold))
+            {
+                _shiftLightActive = false;
+            }
+
+            if (_shiftLightActive)
+            {
+                _currentLedStage = 12;
+                _smoothedLedProximity = 1.0;
+            }
 
             bool localDirty;
-            lock (_lock) { localDirty = _isDataDirty; }
+            lock (_lock)
+            {
+                _out.RevLimiterProximity = Math.Round(_smoothedLedProximity, 4);
+                _out.LedActiveCount = _currentLedStage;
+                _out.ShiftLightFlash = _shiftLightActive;
+                localDirty = _isDataDirty;
+            }
+
             if (localDirty && (now - _lastSaveTime) > SaveIntervalSeconds) TriggerAsyncSave();
         }
     }
