@@ -1,10 +1,8 @@
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
-using System.Globalization;
 using System.IO;
 using System.Text;
-using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
 using GameReaderCommon;
@@ -14,24 +12,25 @@ using SimHub.Plugins;
 namespace FH6SmartShift
 {
     [PluginName("FH6SmartShift")]
-    [PluginDescription("The Architect's Masterpiece - v1.0.0 (Ultimate Monolith, Zero Stutter & Smooth 12-LED Engine)")]
+    [PluginDescription("The Architect's Masterpiece - v1.0.0 (Pure Math & Telemetry Monolith)")]
     [PluginAuthor("mtowarek01")]
     public class FH6SmartShift : IPlugin, IDataPlugin
     {
         private const string StoreKey = "fh6SmartShiftingData"; 
 
-        private const double DownshiftCooldownSeconds = 0.5; 
-        private const double UpshiftCooldownSeconds = 0.30; 
-        private const double ClutchSettleSeconds = 0.15; 
+        private const double DownshiftCooldownSeconds = 0.45; 
+        private const double UpshiftCooldownSeconds = 0.25; 
+        private const double ClutchSettleSeconds = 0.12; 
         private const double SaveIntervalSeconds = 15.0; 
-        private const double MathEvalIntervalSeconds = 0.20; 
+        private const double MathEvalIntervalSeconds = 0.15; 
 
         private const double SafeLandingRpmMultiplier = 0.93; 
         private const double MaxAllowedDownshiftMultiplier = 0.88; 
         
-        private const double LearnWotThreshold = 242.0;
-        private const double LightWotThreshold = 230.0;
-        private const double LiftThreshold = 210.0;
+        private const double LearnWotThreshold = 240.0;
+        private const double RatioLearnAccelThreshold = 75.0;
+        private const double LightWotThreshold = 225.0;
+        private const double LiftThreshold = 205.0;
         private const double BrakeDeadzone = 5.0;
         
         private const double SlipRatioThreshold = 0.20;
@@ -115,6 +114,7 @@ namespace FH6SmartShift
         private double _peakRpmBeforeCut = 0;
         private double _smoothedLiveBuffer = 50.0;
         
+        private int _cleanWotFrames = 0;
         private int _lastLearnedBand = -1;
         private double _lastLearnedPower = 0;
         private double _lastLearnedTorque = 0;
@@ -129,6 +129,10 @@ namespace FH6SmartShift
 
         private double _staticChassisDiveBase = 0.0;
         private bool _isChassisBaseInitialized = false;
+
+        private double _smoothedSlideLevel = 0.0;
+        private double _prevSmoothedSlideLevel = 0.0;
+        private double _smoothedSlideTrend = 0.0;
         
         private Stopwatch _appTime = new Stopwatch();
         private Stopwatch _dtStopwatch = new Stopwatch();
@@ -162,6 +166,12 @@ namespace FH6SmartShift
             public double OversteerSeverity = 0.0;
             public bool IsCounterSteering = false;
             public double CounterSteerSeverity = 0.0; 
+            public double SlideSeverity = 0.0;
+            public double SlideTrend = 0.0;
+            public bool IsSlideDeepening = false;
+            public bool IsSlideRecovering = false;
+            public string SlideStateText = "GRIP";
+            public string SlideBarColor = "#FF9900";
             public bool IsTopGear = false;
             public bool IsGripLost = false; 
             public double BodySlipAngle = 0;
@@ -249,9 +259,6 @@ namespace FH6SmartShift
             
             try { WriteHtmlGarageReport(_snapshotStore, ""); }
             catch (Exception ex) { Debug.WriteLine("[FH6SmartShift] Initial HTML report error: " + ex.Message); }
-
-            // Automatyczna aktualizacja i optymalizacja wyrażeń LED w zainstalowanych dashboardach (.djson)
-            Task.Run(() => UpgradeDashTemplatesIfPresent());
             
             _appTime.Start();
             _dtStopwatch.Start();
@@ -282,6 +289,12 @@ namespace FH6SmartShift
             this.AttachDelegate("OversteerSeverity", () => _out.OversteerSeverity);
             this.AttachDelegate("IsCounterSteering", () => _out.IsCounterSteering);
             this.AttachDelegate("CounterSteerSeverity", () => _out.CounterSteerSeverity); 
+            this.AttachDelegate("SlideSeverity", () => _out.SlideSeverity);
+            this.AttachDelegate("SlideTrend", () => _out.SlideTrend);
+            this.AttachDelegate("IsSlideDeepening", () => _out.IsSlideDeepening);
+            this.AttachDelegate("IsSlideRecovering", () => _out.IsSlideRecovering);
+            this.AttachDelegate("SlideStateText", () => _out.SlideStateText);
+            this.AttachDelegate("SlideBarColor", () => _out.SlideBarColor);
             this.AttachDelegate("IsTopGear", () => _out.IsTopGear);
             this.AttachDelegate("IsGripLost", () => _out.IsGripLost);
             this.AttachDelegate("LiveMappingProgress", () => _out.LiveMappingProgress);
@@ -301,53 +314,6 @@ namespace FH6SmartShift
                 int gearIndex = i;
                 this.AttachDelegate($"Gear{gearIndex}Text", () => _out.GearText[gearIndex]);
                 this.AttachDelegate($"Gear{gearIndex}Color", () => _out.GearColor[gearIndex]);
-            }
-        }
-
-        private static void UpgradeDashTemplatesIfPresent()
-        {
-            try
-            {
-                string dashRoot = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "DashTemplates");
-                if (!Directory.Exists(dashRoot)) return;
-
-                string[] targetFiles = {
-                    Path.Combine(dashRoot, "FH6SmartShift", "FH6SmartShift.djson"),
-                    Path.Combine(dashRoot, "FH6SmartShift MPH", "FH6SmartShift MPH.djson")
-                };
-
-                foreach (string djsonPath in targetFiles)
-                {
-                    if (!File.Exists(djsonPath)) continue;
-
-                    string content = File.ReadAllText(djsonPath, Encoding.UTF8);
-                    string original = content;
-
-                    // Zamiana progów ułamkowych [FH6SmartShift.RevLimiterProximity] > 0.xx na stabilny indeks diody [FH6SmartShift.LedActiveCount] >= 1..12
-                    content = Regex.Replace(
-                        content,
-                        @"\[FH6SmartShift\.RevLimiterProximity\]\s*>=?\s*(0\.\d+)",
-                        match =>
-                        {
-                            if (double.TryParse(match.Groups[1].Value, NumberStyles.Float, CultureInfo.InvariantCulture, out double thresh))
-                            {
-                                int stage = Math.Max(1, Math.Min(12, (int)Math.Round(thresh * 12.0)));
-                                return $"[FH6SmartShift.LedActiveCount] >= {stage}";
-                            }
-                            return match.Value;
-                        });
-
-                    if (content != original)
-                    {
-                        File.Copy(djsonPath, djsonPath + ".pre_led_upgrade.bak", true);
-                        File.WriteAllText(djsonPath, content, Encoding.UTF8);
-                        Debug.WriteLine($"[FH6SmartShift] Zaktualizowano pasek LED w dashboardzie: {djsonPath}");
-                    }
-                }
-            }
-            catch (Exception ex)
-            {
-                Debug.WriteLine($"[FH6SmartShift] Auto-upgrade dashboardu pominiety: {ex.Message}");
             }
         }
 
@@ -1001,6 +967,82 @@ populateCarSelect();
             return _precomputedPower[idx];
         }
 
+        private bool HealEngineMapPockets()
+        {
+            bool healed = false;
+            int minB = Math.Max(2, _globalEngine.MinMappedBand);
+            int maxB = Math.Min(398, _globalEngine.MaxMappedBand - 2);
+
+            for (int i = minB; i <= maxB; i++)
+            {
+                double leftP = _globalEngine.PowerMap[i - 1];
+                double rightP = _globalEngine.PowerMap[i + 1];
+                if (leftP > 10000.0 && rightP > 10000.0)
+                {
+                    double avgNeighbors = 0.5 * (leftP + rightP);
+                    if (_globalEngine.PowerMap[i] > 0 && _globalEngine.PowerMap[i] < avgNeighbors * 0.84)
+                    {
+                        _globalEngine.PowerMap[i] = avgNeighbors;
+                        _globalEngine.TorqueMap[i] = 0.5 * (_globalEngine.TorqueMap[i - 1] + _globalEngine.TorqueMap[i + 1]);
+                        _globalEngine.BoostMap[i] = Math.Max(_globalEngine.BoostMap[i], 0.5 * (_globalEngine.BoostMap[i - 1] + _globalEngine.BoostMap[i + 1]));
+                        if (_globalEngine.BandSamples[i] == 0) _globalEngine.BandSamples[i] = 2;
+                        healed = true;
+                    }
+                }
+
+                if (i + 2 <= maxB)
+                {
+                    double l2 = _globalEngine.PowerMap[i - 1];
+                    double r2 = _globalEngine.PowerMap[i + 2];
+                    if (l2 > 10000.0 && r2 > 10000.0)
+                    {
+                        double expected1 = l2 + (r2 - l2) * (1.0 / 3.0);
+                        double expected2 = l2 + (r2 - l2) * (2.0 / 3.0);
+                        if (_globalEngine.PowerMap[i] > 0 && _globalEngine.PowerMap[i + 1] > 0 &&
+                            _globalEngine.PowerMap[i] < expected1 * 0.82 && _globalEngine.PowerMap[i + 1] < expected2 * 0.82)
+                        {
+                            _globalEngine.PowerMap[i] = expected1;
+                            _globalEngine.PowerMap[i + 1] = expected2;
+                            double tl = _globalEngine.TorqueMap[i - 1];
+                            double tr = _globalEngine.TorqueMap[i + 2];
+                            if (tl > 0 && tr > 0)
+                            {
+                                _globalEngine.TorqueMap[i] = tl + (tr - tl) * (1.0 / 3.0);
+                                _globalEngine.TorqueMap[i + 1] = tl + (tr - tl) * (2.0 / 3.0);
+                            }
+                            healed = true;
+                        }
+                    }
+                }
+            }
+            return healed;
+        }
+
+        private bool IsRatioMonotonicAcrossAllGears(int targetGear, double candidateRatio)
+        {
+            if (candidateRatio <= 5.0 || candidateRatio > 600.0) return false;
+
+            foreach (var kvp in _gearStates)
+            {
+                int otherGear = kvp.Key;
+                double otherRatio = kvp.Value.SavedRpmPerRadS;
+                if (otherGear == targetGear || otherRatio <= 0) continue;
+
+                int gearDiff = Math.Abs(targetGear - otherGear);
+                double minStepFactor = Math.Pow(1.035, gearDiff);
+
+                if (otherGear < targetGear)
+                {
+                    if (candidateRatio * minStepFactor >= otherRatio) return false;
+                }
+                else
+                {
+                    if (candidateRatio <= otherRatio * minStepFactor) return false;
+                }
+            }
+            return true;
+        }
+
         private void CleanUpContaminatedBands(double ghostRpm)
         {
             int ghostBand = (int)Math.Floor((ghostRpm - 25.0) / 50.0);
@@ -1033,25 +1075,29 @@ populateCarSelect();
             _globalEngine.MaxMappedBand = newMaxBand;
         }
 
-        private bool IsRangeDense(double fromRpm, double toRpm, double minFill = 0.85)
+        private bool IsRangeDense(double fromRpm, double toRpm, double minFill = 0.78)
         {
             int a = Math.Max(0, (int)Math.Floor(fromRpm / 50.0));
             int b = Math.Min(400, (int)Math.Ceiling(toRpm / 50.0));
             if (b <= a) return false;
             int ok = 0;
-            for (int i = a; i <= b; i++) if (_globalEngine.BandSamples[i] > 0) ok++;
+            for (int i = a; i <= b; i++)
+            {
+                if (_globalEngine.BandSamples[i] > 0 || GetPrecomputedPower(i * 50.0) > 0) ok++;
+            }
             return (double)ok / (b - a + 1) >= minFill;
         }
 
         private void EvaluateAllMathIntersections(double throttle, int currentGear, double engineMaxRpm, double currentRpm, double actualLimiterLocal)
         {
+            HealEngineMapPockets();
             Array.Clear(_precomputedPower, 0, _precomputedPower.Length);
 
             _globalEngine.MaxPower = 0;
             _globalEngine.MaxTorque = 0;
             for (int i = Math.Max(0, _globalEngine.MinMappedBand); i <= Math.Min(400, _globalEngine.MaxMappedBand); i++)
             {
-                if (_globalEngine.BandSamples[i] == 0) continue;
+                if (_globalEngine.BandSamples[i] == 0 && _globalEngine.PowerMap[i] <= 0) continue;
                 double smoothedP = GetSmoothedValue(i * 50.0, _globalEngine.PowerMap);
                 double smoothedT = GetSmoothedValue(i * 50.0, _globalEngine.TorqueMap);
                 if (smoothedP > _globalEngine.MaxPower) { _globalEngine.MaxPower = smoothedP; _globalEngine.RpmAtMaxPower = i * 50.0; }
@@ -1070,21 +1116,9 @@ populateCarSelect();
                 _precomputedPower[i] = GetSmoothedValue(i * 50.0, _globalEngine.PowerMap);
             }
 
-            double startRpm = Math.Max(1000, _globalEngine.RpmAtMaxPower * 0.50);
+            double startRpm = Math.Max(1000, _globalEngine.RpmAtMaxPower * 0.55);
             double denseUpperLimit = actualLimiterLocal - 250.0;
-            bool isMapDense = false;
-            
-            if (denseUpperLimit > startRpm)
-            {
-                int startBand = (int)Math.Floor(startRpm / 50.0);
-                int endBandLimit = Math.Min(400, (int)Math.Ceiling(denseUpperLimit / 50.0));
-                int expectedBands = Math.Max(1, endBandLimit - startBand);
-                int validBandsInRange = 0;
-                for (int i = startBand; i <= endBandLimit; i++) {
-                    if (_globalEngine.BandSamples[i] > 0) validBandsInRange++;
-                }
-                if (((double)validBandsInRange / expectedBands) >= 0.85) isMapDense = true; 
-            }
+            bool isUpperPowerBandDense = IsRangeDense(Math.Max(startRpm, _globalEngine.RpmAtMaxPower * 0.72), denseUpperLimit, 0.78);
 
             bool hasTurbo = false;
             for (int i = 0; i <= 400; i++) {
@@ -1136,7 +1170,7 @@ populateCarSelect();
                             { 
                                 if (consecutiveIntersections == 0) firstCross = r;
                                 consecutiveIntersections++;
-                                if (consecutiveIntersections >= 6 || (consecutiveIntersections >= 2 && r >= validCeiling - 25))
+                                if (consecutiveIntersections >= 5 || (consecutiveIntersections >= 2 && r >= validCeiling - 25))
                                 {
                                     foundIntersection = true; 
                                     validCeiling = firstCross; 
@@ -1149,8 +1183,10 @@ populateCarSelect();
                             }
                         }
 
-                        bool hitLimiterCeiling = validCeiling >= actualLimiterLocal - 300.0 && (_globalEngine.GhostLimiterRpm > 0 || isMapDense);
-                        bool gearDense = foundIntersection && IsRangeDense(firstCross * dropRatio, actualLimiterLocal - 250.0);
+                        double activeZoneStart = Math.Max(startRpm, validCeiling * dropRatio);
+                        bool isGearActiveZoneDense = IsRangeDense(activeZoneStart, Math.Min(validCeiling, denseUpperLimit), 0.78);
+                        bool hitLimiterCeiling = validCeiling >= actualLimiterLocal - 300.0 && (_globalEngine.GhostLimiterRpm > 0 || isUpperPowerBandDense || isGearActiveZoneDense);
+                        bool gearDense = foundIntersection && IsRangeDense(firstCross * dropRatio, Math.Min(validCeiling, actualLimiterLocal - 200.0), 0.78);
                         
                         if (foundIntersection && gearDense)
                         {
@@ -1168,7 +1204,7 @@ populateCarSelect();
                             gs.TriggerIsGhost = true;
                             gs.ShiftTriggerRpm = actualLimiterLocal - 30.0;
                         }
-                        else if (isMapDense || (!gs.IsMathOptimal && !gs.TriggerIsGhost))
+                        else if (isUpperPowerBandDense || (!gs.IsMathOptimal && !gs.TriggerIsGhost))
                         {
                             gs.IsConfirmed = false;
                             gs.TriggerIsEdge = true;
@@ -1180,11 +1216,14 @@ populateCarSelect();
                         gs.PowerPeakCaught = true;
                         SaveGearTrigger(g, gs);
                     }
-                    else if (!hasHigherGear && throttle >= LearnWotThreshold && currentGear == g)
+                    else if (!hasHigherGear)
                     {
-                        if (currentRpm >= actualLimiterLocal - 100)
+                        bool prevGearConfirmed = g > 1 && _gearStates.TryGetValue(g - 1, out var prevG) && prevG.IsConfirmed;
+                        bool reachedHighRpm = throttle >= LearnWotThreshold && currentGear == g && currentRpm >= actualLimiterLocal - 120.0;
+
+                        if (reachedHighRpm || (g >= 4 && prevGearConfirmed && gs.SavedRpmPerRadS > 0 && isUpperPowerBandDense))
                         {
-                            gs.ShiftTriggerRpm = actualLimiterLocal - 30;
+                            gs.ShiftTriggerRpm = actualLimiterLocal - 30.0;
                             gs.PowerPeakCaught = true;
                             gs.IsConfirmed = true;
                             gs.IsMathOptimal = false;
@@ -1227,6 +1266,12 @@ populateCarSelect();
                 _out.OversteerSeverity = 0.0;
                 _out.IsCounterSteering = false;
                 _out.CounterSteerSeverity = 0.0;
+                _out.SlideSeverity = 0.0;
+                _out.SlideTrend = 0.0;
+                _out.IsSlideDeepening = false;
+                _out.IsSlideRecovering = false;
+                _out.SlideStateText = "GRIP";
+                _out.SlideBarColor = "#FF9900";
                 _out.IsTopGear = false;
                 _out.IsTractionGood = true;
                 _out.IsGripLost = false;
@@ -1239,6 +1284,9 @@ populateCarSelect();
                 _shiftLightActive = false;
                 _smoothedLedProximity = 0.0;
                 _currentLedStage = 0;
+                _smoothedSlideLevel = 0.0;
+                _prevSmoothedSlideLevel = 0.0;
+                _smoothedSlideTrend = 0.0;
                 _lastDownshiftSuggested = false;
                 for (int i = 0; i <= 10; i++)
                 {
@@ -1294,6 +1342,7 @@ populateCarSelect();
                     _lastCarDrivetrain = -1;
                     _lastCarEngineMaxRpmRounded = -1;
                     _peakRpmBeforeCut = 0;
+                    _cleanWotFrames = 0;
                     _lastLearnedBand = -1;
                     _lastLearnedPower = 0;
                     _lastLearnedTime = -100;
@@ -1301,6 +1350,9 @@ populateCarSelect();
                     _smoothedLiveBuffer = 50.0;
                     _smoothedLedProximity = 0.0;
                     _currentLedStage = 0;
+                    _smoothedSlideLevel = 0.0;
+                    _prevSmoothedSlideLevel = 0.0;
+                    _smoothedSlideTrend = 0.0;
                     _speedTrendKmhPerS = 0;
                     _lastSpeedKmhForTrend = 0;
                     _climbDownshiftActive = false;
@@ -1328,6 +1380,7 @@ populateCarSelect();
                     _globalEngine = new GlobalEngineProfile(); 
                     _isDataDirty = true; 
                     _peakRpmBeforeCut = 0;
+                    _cleanWotFrames = 0;
                     _lastLearnedBand = -1;
                     _lastLearnedPower = 0;
                     _lastLearnedTime = -100;
@@ -1335,6 +1388,9 @@ populateCarSelect();
                     _smoothedLiveBuffer = 50.0;
                     _smoothedLedProximity = 0.0;
                     _currentLedStage = 0;
+                    _smoothedSlideLevel = 0.0;
+                    _prevSmoothedSlideLevel = 0.0;
+                    _smoothedSlideTrend = 0.0;
                     _speedTrendKmhPerS = 0;
                     _lastSpeedKmhForTrend = 0;
                     _climbDownshiftActive = false;
@@ -1468,6 +1524,7 @@ populateCarSelect();
                     
                     _gearStates.Clear(); 
                     _globalEngine = new GlobalEngineProfile();
+                    _cleanWotFrames = 0;
                     _lastLearnedBand = -1;
                     _lastLearnedPower = 0;
                     _lastLearnedTorque = 0;
@@ -1476,6 +1533,9 @@ populateCarSelect();
                     _smoothedLiveBuffer = 50.0;
                     _smoothedLedProximity = 0.0;
                     _currentLedStage = 0;
+                    _smoothedSlideLevel = 0.0;
+                    _prevSmoothedSlideLevel = 0.0;
+                    _smoothedSlideTrend = 0.0;
                     _speedTrendKmhPerS = 0;
                     _lastSpeedKmhForTrend = 0;
                     _climbDownshiftActive = false;
@@ -1505,6 +1565,8 @@ populateCarSelect();
                             }
                         }
 
+                        if (HealEngineMapPockets()) _isDataDirty = true;
+
                         double loadedMappedCeilingRpm = _globalEngine.MaxMappedBand * 50.0;
                         if (_globalEngine.GhostLimiterRpm > 0 && (_globalEngine.GhostLimiterRpm >= engineMaxRpm - 35.0 || (loadedMappedCeilingRpm >= 4000.0 && _globalEngine.GhostLimiterRpm > loadedMappedCeilingRpm + 250.0)))
                         {
@@ -1531,14 +1593,18 @@ populateCarSelect();
                                 if (r1 <= 0) continue;
                                 
                                 int violations = 0;
-                                for(int j = i + 1; j < sortedGears.Count; j++) {
+                                for(int j = 0; j < sortedGears.Count; j++) {
+                                    if (i == j) continue;
                                     int g2 = sortedGears[j];
                                     double r2 = savedRatios[g2];
                                     if (r2 <= 0) continue;
-                                    if (r1 <= r2 * 1.02) violations++;
+                                    int diff = Math.Abs(g2 - g1);
+                                    double minStep = Math.Pow(1.035, diff);
+                                    if (g1 < g2 && r1 <= r2 * minStep) violations++;
+                                    else if (g1 > g2 && r1 * minStep >= r2) violations++;
                                 }
                                 
-                                if (violations > maxViolations) {
+                                if (violations > maxViolations || (violations == maxViolations && violations > 0 && g1 > worstGear)) {
                                     maxViolations = violations;
                                     worstGear = g1;
                                 }
@@ -1547,6 +1613,7 @@ populateCarSelect();
                             if (maxViolations > 0 && worstGear != -1) {
                                 savedRatios.Remove(worstGear);
                                 sortedGears.Remove(worstGear);
+                                if (_store.AdvancedGears.TryGetValue(_key, out var agClean)) agClean.Remove(worstGear);
                                 _isDataDirty = true;
                                 cleanLoop = true;
                             }
@@ -1635,6 +1702,7 @@ populateCarSelect();
             {
                 _lastSusTravelRL = ReadDouble(pm, "DataCorePlugin.GameRawData.SuspensionTravelMetersRearLeft");
                 _lastSusTravelRR = ReadDouble(pm, "DataCorePlugin.GameRawData.SuspensionTravelMetersRearRight");
+                _cleanWotFrames = 0;
                 _lastLearnedBand = -1;
                 _lastLearnedPower = 0;
                 _lastLearnedTime = -100;
@@ -1675,7 +1743,7 @@ populateCarSelect();
             double maxAllSlip = Math.Max(Math.Max(Math.Abs(slipRatioFL), Math.Abs(slipRatioFR)), Math.Max(Math.Abs(slipRatioRL), Math.Abs(slipRatioRR)));
             
             double avgWheelSpeed = 0;
-            bool isRatioLearnSafe = (maxAllSlip < 0.10) && (brake < BrakeDeadzone);
+            bool isRatioLearnSafe = isGrounded && !isReboundDetected && (maxAllSlip < 0.08) && (brake < BrakeDeadzone);
 
             if (drivetrainType == Drivetrain.AWD) 
             {
@@ -1694,20 +1762,19 @@ populateCarSelect();
                 avgWheelSpeed = (Math.Abs(wheelSpeedRL) + Math.Abs(wheelSpeedRR)) / 2.0;
             }
 
-            double currentRatio = (isRatioLearnSafe && avgWheelSpeed > 20.0 && currentRpm > 1000.0) ? currentRpm / avgWheelSpeed : 0;
+            double currentRatio = (isRatioLearnSafe && avgWheelSpeed > 16.0 && currentRpm > 1400.0) ? currentRpm / avgWheelSpeed : 0;
 
             double maxRearSlipAngle = Math.Max(Math.Abs(slipAngleRL), Math.Abs(slipAngleRR));
             double maxRearCombinedSlip = Math.Max(Math.Abs(combinedSlipRL), Math.Abs(combinedSlipRR));
             double currentOversteer = 0.0;
             
-            if (speedKmh > 20.0 && (drivetrainType == Drivetrain.RWD || drivetrainType == Drivetrain.AWD))
+            if (speedKmh > 15.0)
             {
-                double angleScore = Math.Max(0, (maxRearSlipAngle - 0.12) / 0.48); 
-                double slipScore = Math.Max(0, (maxRearCombinedSlip - 0.65) / 0.75); 
+                double angleScore = Math.Max(0, (maxRearSlipAngle - 0.08) / 0.45); 
+                double slipScore = Math.Max(0, (maxRearCombinedSlip - 0.45) / 0.75); 
                 
-                currentOversteer = Math.Min(1.0, (angleScore * 0.7) + (slipScore * 0.3));
-                if (drivetrainType == Drivetrain.AWD) currentOversteer *= 0.65; 
-                if (accel < LiftThreshold) currentOversteer *= 0.6; 
+                currentOversteer = Math.Min(1.0, (angleScore * 0.65) + (slipScore * 0.35));
+                if (drivetrainType == Drivetrain.AWD) currentOversteer *= 0.80; 
             }
 
             bool isDrivetrainDecoupled = (clutch >= 2.0 || handbrake >= 2.0);
@@ -1721,6 +1788,7 @@ populateCarSelect();
                 
                 _smoothedLedProximity = 0.0;
                 _currentLedStage = 0;
+                _cleanWotFrames = 0;
 
                 if (_gearStates.TryGetValue(_lastGear, out var oldGs)) { oldGs.RatioSamples = 0; oldGs.RatioHistoryIdx = 0; }
                 if (_gearStates.TryGetValue(currentGear, out var newGs)) { newGs.RatioSamples = 0; newGs.RatioHistoryIdx = 0; }
@@ -1773,7 +1841,7 @@ populateCarSelect();
             }
 
             bool isLowGear = currentGear >= 1 && currentGear <= 3;
-            double slipTolerance = isLowGear ? 0.65 : 0.40; 
+            double slipTolerance = isLowGear ? 0.60 : 0.38; 
             
             bool tractionOk = maxDrivenSlipRatio < slipTolerance && maxDrivenSlipAngle < SlipAngleThreshold;
 
@@ -1819,6 +1887,7 @@ populateCarSelect();
                         _mathNeedsEval = true;
                     }
                     _peakRpmBeforeCut = 0;
+                    _cleanWotFrames = 0;
                     _lastLearnedBand = -1;
                     _lastLearnedPower = 0;
                     _lastLearnedTime = -100;
@@ -1941,11 +2010,24 @@ populateCarSelect();
 
                 double actualLimiterLocal = _globalEngine.GhostLimiterRpm > 0 ? _globalEngine.GhostLimiterRpm : Math.Max(engineMaxRpm, _globalEngine.MaxMappedBand * 50.0);
                 bool isLimiterProximity = currentRpm > actualLimiterLocal - 50.0 || (isLearnWot && _currentRpmAccel <= 0 && currentRpm > actualLimiterLocal - 250.0);
-                bool dipDetected = (_globalEngine.GhostLimiterRpm > 0 && currentRpm > _globalEngine.GhostLimiterRpm - 150 && _currentRpmAccel <= 0) || (_lastLearnedPower > 0 && currentPower < _lastLearnedPower * 0.80);
+                
+                double localMapPower = GetSmoothedValue(currentRpm, _globalEngine.PowerMap);
+                bool dipDetected = (_globalEngine.GhostLimiterRpm > 0 && currentRpm > _globalEngine.GhostLimiterRpm - 150 && _currentRpmAccel <= 0)
+                                   || (_lastLearnedPower > 0 && currentPower < _lastLearnedPower * 0.84)
+                                   || (localMapPower > 0 && currentPower < localMapPower * 0.88);
                 
                 bool filtersOk = isGrounded && !inPuddle && !hasDamage && !isReboundDetected && !isRumble && isDrivetrainEngaged && isLearnWot && !isAfterAnyShift && tractionOk;
 
-                if (currentPower > 0 && filtersOk && currentPower > 5000.0 && !dipDetected && !isLimiterProximity)
+                if (filtersOk && currentPower > 5000.0 && !dipDetected && !isLimiterProximity)
+                {
+                    _cleanWotFrames++;
+                }
+                else
+                {
+                    _cleanWotFrames = 0;
+                }
+
+                if (_cleanWotFrames >= 2 && currentPower > 5000.0)
                 {
                     double currentBoost = Math.Max(0.0, ReadDouble(pm, "DataCorePlugin.GameRawData.Boost")); 
                     bool boostOk = true;
@@ -1964,7 +2046,7 @@ populateCarSelect();
                     {
                         if (currentRpmBand >= 0 && currentRpmBand <= 400)
                         {
-                            if (_lastLearnedBand > 0 && currentRpmBand > _lastLearnedBand && (currentRpmBand - _lastLearnedBand) <= 10)
+                            if (_lastLearnedBand > 0 && currentRpmBand > _lastLearnedBand && (currentRpmBand - _lastLearnedBand) <= 12)
                             {
                                 if (_lastLearnedBand < _globalEngine.MinMappedBand) _globalEngine.MinMappedBand = _lastLearnedBand;
                                 if (currentRpmBand > _globalEngine.MaxMappedBand) _globalEngine.MaxMappedBand = currentRpmBand;
@@ -1976,11 +2058,12 @@ populateCarSelect();
                                     double sweepTorque = _lastLearnedTorque + t * (currentTorque - _lastLearnedTorque);
 
                                     _globalEngine.BandSamples[i]++;
-                                    double alpha = Math.Max(1.0 / _globalEngine.BandSamples[i], 0.05);
+                                    double existingP = _globalEngine.PowerMap[i];
+                                    double alpha = existingP == 0 ? 1.0 : (sweepPower >= existingP ? 0.35 : 0.08);
 
-                                    _globalEngine.PowerMap[i] = _globalEngine.PowerMap[i] == 0 ? sweepPower : (_globalEngine.PowerMap[i] * (1.0 - alpha)) + (sweepPower * alpha);
+                                    _globalEngine.PowerMap[i] = existingP == 0 ? sweepPower : (existingP * (1.0 - alpha)) + (sweepPower * alpha);
                                     _globalEngine.TorqueMap[i] = _globalEngine.TorqueMap[i] == 0 ? sweepTorque : (_globalEngine.TorqueMap[i] * (1.0 - alpha)) + (sweepTorque * alpha);
-                                    _globalEngine.BoostMap[i] = _globalEngine.BoostMap[i] == 0 ? currentBoost : (_globalEngine.BoostMap[i] * (1.0 - alpha)) + (currentBoost * alpha);
+                                    _globalEngine.BoostMap[i] = _globalEngine.BoostMap[i] == 0 ? currentBoost : Math.Max(_globalEngine.BoostMap[i] * 0.95, (_globalEngine.BoostMap[i] * (1.0 - alpha)) + (currentBoost * alpha));
                                 }
                             }
                             else
@@ -1989,11 +2072,12 @@ populateCarSelect();
                                 if (currentRpmBand > _globalEngine.MaxMappedBand) _globalEngine.MaxMappedBand = currentRpmBand;
 
                                 _globalEngine.BandSamples[currentRpmBand]++;
-                                double alpha = Math.Max(1.0 / _globalEngine.BandSamples[currentRpmBand], 0.05);
+                                double existingP = _globalEngine.PowerMap[currentRpmBand];
+                                double alpha = existingP == 0 ? 1.0 : (currentPower >= existingP ? 0.35 : 0.08);
 
-                                _globalEngine.PowerMap[currentRpmBand] = _globalEngine.PowerMap[currentRpmBand] == 0 ? currentPower : (_globalEngine.PowerMap[currentRpmBand] * (1.0 - alpha)) + (currentPower * alpha);
+                                _globalEngine.PowerMap[currentRpmBand] = existingP == 0 ? currentPower : (existingP * (1.0 - alpha)) + (currentPower * alpha);
                                 _globalEngine.TorqueMap[currentRpmBand] = _globalEngine.TorqueMap[currentRpmBand] == 0 ? currentTorque : (_globalEngine.TorqueMap[currentRpmBand] * (1.0 - alpha)) + (currentTorque * alpha);
-                                _globalEngine.BoostMap[currentRpmBand] = _globalEngine.BoostMap[currentRpmBand] == 0 ? currentBoost : (_globalEngine.BoostMap[currentRpmBand] * (1.0 - alpha)) + (currentBoost * alpha);
+                                _globalEngine.BoostMap[currentRpmBand] = _globalEngine.BoostMap[currentRpmBand] == 0 ? currentBoost : Math.Max(_globalEngine.BoostMap[currentRpmBand] * 0.95, (_globalEngine.BoostMap[currentRpmBand] * (1.0 - alpha)) + (currentBoost * alpha));
                             }
 
                             _lastLearnedTime = now;
@@ -2005,41 +2089,35 @@ populateCarSelect();
                         }
                     }
                 }
-                else
+                else if (!filtersOk || dipDetected)
                 {
                     _lastLearnedBand = -1;
                     _lastLearnedPower = 0;
                     _lastLearnedTime = -100;
                 }
 
-                if (currentRatio > 0 && isLearnWot && isDrivetrainEngaged && !isAfterAnyShift)
+                if (currentRatio > 0 && accel >= RatioLearnAccelThreshold && isDrivetrainEngaged && !isAfterAnyShift)
                 {
                     gs.RatioHistory[gs.RatioHistoryIdx] = currentRatio;
                     gs.RatioHistoryIdx = (gs.RatioHistoryIdx + 1) % 25;
                     if (gs.RatioSamples < 25) gs.RatioSamples++;
                     
-                    if (gs.RatioSamples >= 15)
+                    if (gs.RatioSamples >= 12)
                     {
                         int samplesToTake = gs.RatioSamples;
                         Array.Copy(gs.RatioHistory, _ratioScratch, samplesToTake);
                         Array.Sort(_ratioScratch, 0, samplesToTake);
                         double median = _ratioScratch[samplesToTake / 2];
 
-                        bool isValidRatio = true;
-                        if (currentGear > 1 && _gearStates.TryGetValue(currentGear - 1, out var pGState) && pGState.SavedRpmPerRadS > 0)
-                        {
-                            if (median >= pGState.SavedRpmPerRadS * 0.98) isValidRatio = false;
-                        }
-                        if (_gearStates.TryGetValue(currentGear + 1, out var nGState) && nGState.SavedRpmPerRadS > 0)
-                        {
-                            if (median <= nGState.SavedRpmPerRadS * 1.02) isValidRatio = false;
-                        }
+                        double p25 = _ratioScratch[samplesToTake / 4];
+                        double p75 = _ratioScratch[(samplesToTake * 3) / 4];
+                        bool isTightCluster = median > 0 && ((p75 - p25) / median) < 0.012;
 
-                        if (isValidRatio)
+                        if (isTightCluster)
                         {
                             if (gs.SavedRpmPerRadS > 0)
                             {
-                                if (Math.Abs(median - gs.SavedRpmPerRadS) / gs.SavedRpmPerRadS > 0.05)
+                                if (Math.Abs(median - gs.SavedRpmPerRadS) / gs.SavedRpmPerRadS > 0.045)
                                 {
                                     gs.RatioMismatchCount++;
                                     gs.RatioSamples = 0;
@@ -2055,6 +2133,7 @@ populateCarSelect();
                                     else if (gs.RatioMismatchCount >= 3)
                                     {
                                         gs.SavedRpmPerRadS = 0;
+                                        gs.RpmPerRadS = 0;
                                         gs.ShiftTriggerRpm = 0;
                                         gs.IsConfirmed = false;
                                         gs.IsMathOptimal = false;
@@ -2070,12 +2149,14 @@ populateCarSelect();
                                 else
                                 {
                                     gs.RatioMismatchCount = 0;
+                                    gs.RpmPerRadS = (gs.SavedRpmPerRadS * 0.85) + (median * 0.15);
+                                    gs.SavedRpmPerRadS = gs.RpmPerRadS;
                                 }
                             }
-
-                            if (gs.SavedRpmPerRadS == 0)
+                            else if (IsRatioMonotonicAcrossAllGears(currentGear, median))
                             {
-                                gs.RpmPerRadS = median; gs.SavedRpmPerRadS = median;
+                                gs.RpmPerRadS = median;
+                                gs.SavedRpmPerRadS = median;
                                 gs.RatioMismatchCount = 0;
                                 if (!_store.GearRatios.ContainsKey(_key)) _store.GearRatios[_key] = new Dictionary<int, double>();
                                 _store.GearRatios[_key][currentGear] = gs.RpmPerRadS;
@@ -2158,28 +2239,60 @@ populateCarSelect();
                 double bodySlipAngle = speedKmh > 5.0 ? (Math.Atan2(velX, Math.Abs(velZ) + 0.01) * 180.0 / Math.PI) : 0;
                 _out.BodySlipAngle = bodySlipAngle;
 
-                double normalizedSteer = steer / 127.0;
-                double rawCounterSeverity = 0.0;
+                double absBodySlipDeg = Math.Abs(bodySlipAngle);
+                double bodyAngleComponent = Math.Max(0.0, (absBodySlipDeg - 2.5) / 25.0);
+                double wheelSlipComponent = Math.Max(0.0, (maxDrivenSlipRatio - 0.18) / 0.82);
+                double rawSlideSeverity = 0.0;
 
-                if (currentOversteer > 0.30) 
+                if (speedKmh > 15.0)
                 {
-                    bool significantSteer = Math.Abs(normalizedSteer) > 0.15;
-                    bool significantYaw = Math.Abs(angularVelY) > 0.30;
-                    
-                    if (significantSteer && significantYaw && (Math.Sign(normalizedSteer) != Math.Sign(angularVelY))) 
-                    {
-                        rawCounterSeverity = Math.Min(1.0, (Math.Abs(normalizedSteer) - 0.15) / 0.85);
-                    }
+                    rawSlideSeverity = Math.Min(1.0, Math.Max(currentOversteer, (bodyAngleComponent * 0.65) + (wheelSlipComponent * 0.35)));
                 }
 
-                double tauCounter = 0.08; 
-                double alphaCounter = 1.0 - Math.Exp(-_frameDt / tauCounter);
+                double tauSlide = rawSlideSeverity >= _smoothedSlideLevel ? 0.05 : 0.10;
+                double alphaSlide = 1.0 - Math.Exp(-_frameDt / tauSlide);
+                _prevSmoothedSlideLevel = _smoothedSlideLevel;
+                _smoothedSlideLevel = (_smoothedSlideLevel * (1.0 - alphaSlide)) + (rawSlideSeverity * alphaSlide);
 
-                _out.CounterSteerSeverity = (_out.CounterSteerSeverity * (1.0 - alphaCounter)) + (rawCounterSeverity * alphaCounter);
-                _out.IsCounterSteering = _out.CounterSteerSeverity > 0.10;
+                double instSlideRate = _frameDt > 0.0005 ? (_smoothedSlideLevel - _prevSmoothedSlideLevel) / _frameDt : 0.0;
+                double alphaTrend = 1.0 - Math.Exp(-_frameDt / 0.12);
+                _smoothedSlideTrend = (_smoothedSlideTrend * (1.0 - alphaTrend)) + (instSlideRate * alphaTrend);
+
+                bool isSlidingActive = _smoothedSlideLevel > 0.08;
+                bool isDeepening = isSlidingActive && (_smoothedSlideTrend > 0.10 || (_smoothedSlideLevel > 0.65 && _smoothedSlideTrend > -0.03));
+                bool isRecovering = isSlidingActive && !isDeepening && (_smoothedSlideTrend < -0.08);
+
+                _out.SlideSeverity = Math.Round(_smoothedSlideLevel, 4);
+                _out.SlideTrend = Math.Round(Math.Max(-1.0, Math.Min(1.0, _smoothedSlideTrend)), 4);
+                _out.IsSlideDeepening = isDeepening;
+                _out.IsSlideRecovering = isRecovering;
+
+                if (!isSlidingActive)
+                {
+                    _out.SlideStateText = "GRIP";
+                    _out.SlideBarColor = "#2ECC71";
+                }
+                else if (isDeepening)
+                {
+                    _out.SlideStateText = "▲ DEEPENING";
+                    _out.SlideBarColor = "#E74C3C";
+                }
+                else if (isRecovering)
+                {
+                    _out.SlideStateText = "◄ RECOVERING";
+                    _out.SlideBarColor = "#2ECC71";
+                }
+                else
+                {
+                    _out.SlideStateText = "● HOLDING";
+                    _out.SlideBarColor = "#FF9900";
+                }
+
+                _out.CounterSteerSeverity = _out.SlideSeverity;
+                _out.IsCounterSteering = isSlidingActive;
 
                 bool isTopGear = false;
-                if (currentGear >= 5 && _gearStates.TryGetValue(currentGear, out var cgTop) && cgTop.SavedRpmPerRadS > 0 && cgTop.IsConfirmed)
+                if (currentGear >= 4 && _gearStates.TryGetValue(currentGear, out var cgTop) && cgTop.SavedRpmPerRadS > 0 && cgTop.IsConfirmed)
                 {
                     int maxKnownGear = currentGear;
                     foreach (var k in _gearStates) if (k.Value.SavedRpmPerRadS > 0 && k.Key > maxKnownGear) maxKnownGear = k.Key;
@@ -2341,7 +2454,7 @@ populateCarSelect();
                 
                 _out.IsLearningComplete = isLearned;
 
-                double startRpm = Math.Max(1000, _globalEngine.RpmAtMaxPower * 0.50);
+                double startRpm = Math.Max(1000, _globalEngine.RpmAtMaxPower * 0.55);
                 double baseRpmProgress = startRpm; 
                 double denseUpperLimit = actualLimiter - 250.0;
                 
@@ -2364,7 +2477,7 @@ populateCarSelect();
                     _out.LiveMappingProgress = 0;
                 }
 
-                double range = actualLimiter - baseRpmProgress;
+                double range = denseUpperLimit - baseRpmProgress;
                 if (now - _lastMapScanTime >= 0.5)
                 {
                     _lastMapScanTime = now;
@@ -2394,7 +2507,7 @@ populateCarSelect();
                     }
                 }
                 
-                bool isEngineMapTrusted = _out.LiveMappingProgress >= 95.0;
+                bool isEngineMapTrusted = _out.LiveMappingProgress >= 92.0;
                 _out.EngineMapStatus = isEngineMapTrusted ? "OK" : "LEARN";
 
                 for (int i = 1; i <= 10; i++)
@@ -2408,20 +2521,10 @@ populateCarSelect();
                                 _out.GearText[i] = LabelsPeak[i];
                                 _out.GearColor[i] = "#4CAF50"; 
                             }
-                            else if (gState.TriggerIsGhost)
+                            else
                             {
                                 _out.GearText[i] = LabelsLimitConfirmed[i];
                                 _out.GearColor[i] = "#4CAF50"; 
-                            }
-                            else if (gState.TriggerIsEdge)
-                            {
-                                _out.GearText[i] = LabelsLimit[i];
-                                _out.GearColor[i] = "#F39C12"; 
-                            }
-                            else
-                            {
-                                _out.GearText[i] = LabelsRatio[i];
-                                _out.GearColor[i] = "#95A5A6"; 
                             }
                         }
                         else if (gState.TriggerIsEdge)
@@ -2453,7 +2556,6 @@ populateCarSelect();
                 }
             }
 
-            // === PŁYNNY I STABILNY SILNIK PASKA 12 LED (Zero przeskakiwania diod + Anti-Flicker) ===
             double effectiveTarget = Math.Max(engineIdleRpm + 500.0, trigger);
             double ledSpan = Math.Max(1200.0, (effectiveTarget - engineIdleRpm) * 0.28);
             double startLight = Math.Max(engineIdleRpm + 200.0, effectiveTarget - ledSpan);
@@ -2482,7 +2584,6 @@ populateCarSelect();
                 }
                 else if (isPushingWot && _currentRpmAccel >= -80.0 && rawProximity > _smoothedLedProximity - 0.06)
                 {
-                    // Blokada cofania diod na pełnym gazie przy chwilowym drgnięciu obrotów na tarkach
                 }
                 else
                 {
