@@ -5,6 +5,10 @@ using System.IO;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
+using System.Windows;
+using System.Windows.Controls;
+using System.Windows.Media;
+using System.Windows.Threading;
 using GameReaderCommon;
 using Newtonsoft.Json;
 using SimHub.Plugins;
@@ -12,9 +16,9 @@ using SimHub.Plugins;
 namespace FH6SmartShift
 {
     [PluginName("FH6SmartShift")]
-    [PluginDescription("The Architect's Masterpiece - v1.0.0 (Pure Math & Telemetry Monolith)")]
+    [PluginDescription("The Architect's Masterpiece - v1.1.0 (FH6 & Forza Motorsport Virtual Dyno, Dragy, Tuning Advisor & WPF UI)")]
     [PluginAuthor("mtowarek01")]
-    public class FH6SmartShift : IPlugin, IDataPlugin
+    public class FH6SmartShift : IPlugin, IDataPlugin, IWPFSettings
     {
         private const string StoreKey = "fh6SmartShiftingData"; 
 
@@ -28,7 +32,7 @@ namespace FH6SmartShift
         private const double MaxAllowedDownshiftMultiplier = 0.88; 
         
         private const double LearnWotThreshold = 240.0;
-        private const double RatioLearnAccelThreshold = 75.0;
+        private const double RatioLearnAccelThreshold = 20.0;
         private const double LightWotThreshold = 225.0;
         private const double LiftThreshold = 205.0;
         private const double BrakeDeadzone = 5.0;
@@ -68,6 +72,10 @@ namespace FH6SmartShift
             public int[] BandSamples = new int[401];
             public int MinMappedBand = 400; 
             public int MaxMappedBand = 0;
+
+            public double Best0To100 = 0;
+            public double Best100To200 = 0;
+            public double Best0To200 = 0;
         }
 
         class GearState
@@ -93,11 +101,16 @@ namespace FH6SmartShift
 
         private Dictionary<int, GearState> _gearStates = new Dictionary<int, GearState>();
         private GlobalEngineProfile _globalEngine = new GlobalEngineProfile();
+        private Dictionary<string, string> _externalCarList = new Dictionary<string, string>();
+        private DateTime _lastCarListWriteTime = DateTime.MinValue;
+        private double _lastCarListCheckTime = -100;
 
         private int _resetCurrentRequested = 0;
         private int _resetAllRequested = 0;
         private int _resetLimitGearsRequested = 0;
         private int _resetRatiosRequested = 0; 
+        private int _resetDragyRequested = 0;
+        private int _toggleBeepRequested = 0;
 
         private int _lastGear = 0;
         private double _lastDownshiftTime = -100;
@@ -133,6 +146,18 @@ namespace FH6SmartShift
         private double _smoothedSlideLevel = 0.0;
         private double _prevSmoothedSlideLevel = 0.0;
         private double _smoothedSlideTrend = 0.0;
+
+        private double _prevSpeedKmhDragy = 0.0;
+        private double _prevTimeDragy = 0.0;
+        private bool _dragyArmedFromStop = false;
+        private bool _dragyRunningFromStop = false;
+        private bool _dragyPassed100FromStop = false;
+        private double _dragyStart0Time = 0.0;
+        private bool _dragyRunning100To200 = false;
+        private double _dragyStart100Time = 0.0;
+
+        private double _lastBeepTime = -100.0;
+        private int _beepInFlight = 0;
         
         private Stopwatch _appTime = new Stopwatch();
         private Stopwatch _dtStopwatch = new Stopwatch();
@@ -156,7 +181,10 @@ namespace FH6SmartShift
 
         class Outputs
         {
+            public string ActiveGameMode = "FH6";
             public string CarKey = "";
+            public string CarName = "Unknown Car";
+            public bool IsShiftBeepEnabled = false;
             public bool IsTractionGood = true;
             public bool IsDownshiftSafe = false;
             public bool IsDownshiftSuggested = false;
@@ -185,11 +213,22 @@ namespace FH6SmartShift
             public double DownshiftTriggerRpm = 0;
             public double OptimalShiftRpm = 0;
             public double LiveMappingProgress = 0;
+
+            public double DragyLast0To100 = 0.0;
+            public double DragyBest0To100 = 0.0;
+            public double DragyLast100To200 = 0.0;
+            public double DragyBest100To200 = 0.0;
+            public double DragyLast0To200 = 0.0;
+            public double DragyBest0To200 = 0.0;
+            public string DragyStatus = "READY";
+
             public double DbgSteerRaw = 0;
             public double DbgYawRaw = 0;
             public double DbgChassisDive = 0.0;
             public string EngineMapStatus = "LEARN"; 
             public string MapCoverageBar = "[░░░░░░░░░░░░░░░░░░░░]";
+            public string CurrentGearStatusText = "-";
+            public string CurrentGearColor = "#00000000";
             public string[] GearText = new string[11];
             public string[] GearColor = new string[11];
 
@@ -201,17 +240,338 @@ namespace FH6SmartShift
         
         private Outputs _out = new Outputs();
 
-        private static string GetReportFilePath()
+        private static string GetCommonDataDir()
         {
             string dir = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "PluginsData", "Common");
             if (!Directory.Exists(dir)) Directory.CreateDirectory(dir);
-            return Path.Combine(dir, "FH6SmartShift_GarageReport.html");
+            return dir;
+        }
+
+        private static string GetReportFilePath()
+        {
+            return Path.Combine(GetCommonDataDir(), "FH6SmartShift_GarageReport.html");
+        }
+
+        private static string GetCarListFilePath()
+        {
+            return Path.Combine(GetCommonDataDir(), "FH6SmartShift_CarList.json");
+        }
+
+        private void EnsureAndLoadCarList()
+        {
+            try
+            {
+                string path = GetCarListFilePath();
+                if (!File.Exists(path))
+                {
+                    var starterMap = new Dictionary<string, string>();
+                    File.WriteAllText(path, JsonConvert.SerializeObject(starterMap, Formatting.Indented), Encoding.UTF8);
+                }
+
+                var info = new FileInfo(path);
+                if (info.LastWriteTimeUtc != _lastCarListWriteTime)
+                {
+                    string json = File.ReadAllText(path, Encoding.UTF8);
+                    var loaded = JsonConvert.DeserializeObject<Dictionary<string, string>>(json);
+                    if (loaded != null)
+                    {
+                        lock (_lock)
+                        {
+                            _externalCarList = loaded;
+                            foreach (var kvp in loaded)
+                            {
+                                _store.CarNames[kvp.Key] = kvp.Value;
+                                _snapshotStore.CarNames[kvp.Key] = kvp.Value;
+                            }
+                        }
+                    }
+                    _lastCarListWriteTime = info.LastWriteTimeUtc;
+                }
+            }
+            catch (Exception ex)
+            {
+                Debug.WriteLine("[FH6SmartShift] CarList load error: " + ex.Message);
+            }
+        }
+
+        private string ResolveCarName(int ordinal, string fullKey)
+        {
+            if (!string.IsNullOrEmpty(fullKey) && _store.CarNames.TryGetValue(fullKey, out string exactName) && !string.IsNullOrWhiteSpace(exactName))
+                return exactName;
+            string ordKey = ordinal.ToString();
+            if (_store.CarNames.TryGetValue(ordKey, out string ordName) && !string.IsNullOrWhiteSpace(ordName))
+                return ordName;
+            if (!string.IsNullOrEmpty(fullKey) && _externalCarList.TryGetValue(fullKey, out string extExact) && !string.IsNullOrWhiteSpace(extExact))
+                return extExact;
+            if (_externalCarList.TryGetValue(ordKey, out string extOrd) && !string.IsNullOrWhiteSpace(extOrd))
+                return extOrd;
+            return $"Car #{ordinal}";
+        }
+
+        private void TriggerShiftBeepSound(double now)
+        {
+            if (!_store.ShiftBeepEnabled) return;
+            if (now - _lastBeepTime < 0.40) return;
+            _lastBeepTime = now;
+
+            if (Interlocked.CompareExchange(ref _beepInFlight, 1, 0) == 0)
+            {
+                Task.Run(() =>
+                {
+                    try
+                    {
+                        Console.Beep(2650, 60);
+                    }
+                    catch
+                    {
+                    }
+                    finally
+                    {
+                        Interlocked.Exchange(ref _beepInFlight, 0);
+                    }
+                });
+            }
+        }
+
+        public Control GetWPFSettingsControl(PluginManager pluginManager)
+        {
+            var bgDark = new SolidColorBrush(Color.FromRgb(13, 17, 23));
+            var cardBg = new SolidColorBrush(Color.FromRgb(22, 27, 34));
+            var borderBrush = new SolidColorBrush(Color.FromRgb(48, 54, 61));
+            var textWhite = new SolidColorBrush(Color.FromRgb(230, 237, 243));
+            var textMuted = new SolidColorBrush(Color.FromRgb(139, 148, 158));
+            var accentGreen = new SolidColorBrush(Color.FromRgb(35, 134, 54));
+            var accentBlue = new SolidColorBrush(Color.FromRgb(31, 111, 235));
+            var accentRed = new SolidColorBrush(Color.FromRgb(207, 34, 46));
+
+            var rootScroll = new ScrollViewer
+            {
+                VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
+                Background = bgDark
+            };
+
+            var mainStack = new StackPanel
+            {
+                Margin = new Thickness(24),
+                MaxWidth = 920,
+                HorizontalAlignment = HorizontalAlignment.Left
+            };
+
+            var titleBlock = new TextBlock
+            {
+                Text = "🏎️ FH6SmartShift v1.1.0 — FH6 & Forza Motorsport Control Center",
+                FontSize = 20,
+                FontWeight = FontWeights.Bold,
+                Foreground = textWhite,
+                Margin = new Thickness(0, 0, 0, 6)
+            };
+            var subTitleBlock = new TextBlock
+            {
+                Text = "Real-time 401-Band Virtual Dyno, 12-LED Shift Engine, Dragy Performance Timer & Gearbox Tuning Advisor.",
+                FontSize = 13,
+                Foreground = textMuted,
+                Margin = new Thickness(0, 0, 0, 18)
+            };
+            mainStack.Children.Add(titleBlock);
+            mainStack.Children.Add(subTitleBlock);
+
+            var statusBorder = new Border
+            {
+                Background = cardBg,
+                BorderBrush = borderBrush,
+                BorderThickness = new Thickness(1),
+                CornerRadius = new CornerRadius(8),
+                Padding = new Thickness(18),
+                Margin = new Thickness(0, 0, 0, 16)
+            };
+            var statusStack = new StackPanel();
+            var liveHeader = new TextBlock
+            {
+                Text = "📡 LIVE VEHICLE & TELEMETRY STATUS (AUTO-DETECTS FH6 / FORZA MOTORSPORT)",
+                FontSize = 12,
+                FontWeight = FontWeights.Bold,
+                Foreground = accentBlue,
+                Margin = new Thickness(0, 0, 0, 8)
+            };
+            var liveCarText = new TextBlock
+            {
+                Text = "Active Car: Waiting for Forza UDP telemetry...",
+                FontSize = 15,
+                FontWeight = FontWeights.SemiBold,
+                Foreground = textWhite,
+                Margin = new Thickness(0, 0, 0, 4)
+            };
+            var liveDynoText = new TextBlock
+            {
+                Text = "Dyno Mapping: 0% (LEARN) | Peak Power: — | Optimal Shift Target: —",
+                FontSize = 13.5,
+                Foreground = textMuted,
+                Margin = new Thickness(0, 0, 0, 4)
+            };
+            var liveDragyText = new TextBlock
+            {
+                Text = "Dragy Records — 0-100 km/h: — | 100-200 km/h: — | 0-200 km/h: —",
+                FontSize = 13.5,
+                Foreground = new SolidColorBrush(Color.FromRgb(63, 185, 80))
+            };
+            statusStack.Children.Add(liveHeader);
+            statusStack.Children.Add(liveCarText);
+            statusStack.Children.Add(liveDynoText);
+            statusStack.Children.Add(liveDragyText);
+            statusBorder.Child = statusStack;
+            mainStack.Children.Add(statusBorder);
+
+            var settingsBorder = new Border
+            {
+                Background = cardBg,
+                BorderBrush = borderBrush,
+                BorderThickness = new Thickness(1),
+                CornerRadius = new CornerRadius(8),
+                Padding = new Thickness(18),
+                Margin = new Thickness(0, 0, 0, 16)
+            };
+            var settingsStack = new StackPanel();
+            settingsStack.Children.Add(new TextBlock
+            {
+                Text = "⚙️ SHIFT LIGHT & AUDIO CONFIGURATION",
+                FontSize = 12,
+                FontWeight = FontWeights.Bold,
+                Foreground = accentBlue,
+                Margin = new Thickness(0, 0, 0, 12)
+            });
+
+            var beepCheck = new CheckBox
+            {
+                Content = "🔊 Enable F1 / GT3 Audio Shift Beep (2650 Hz tone when all 12 LEDs lock at ShiftLightFlash)",
+                IsChecked = _store.ShiftBeepEnabled,
+                Foreground = textWhite,
+                FontSize = 13.5,
+                Margin = new Thickness(0, 0, 0, 14)
+            };
+            beepCheck.Checked += (s, e) => { lock (_lock) { _store.ShiftBeepEnabled = true; _out.IsShiftBeepEnabled = true; _isDataDirty = true; } TriggerAsyncSave(); };
+            beepCheck.Unchecked += (s, e) => { lock (_lock) { _store.ShiftBeepEnabled = false; _out.IsShiftBeepEnabled = false; _isDataDirty = true; } TriggerAsyncSave(); };
+            settingsStack.Children.Add(beepCheck);
+
+            double initialBuffer = _store.ReactionBufferFactor > 0.05 ? _store.ReactionBufferFactor : 0.25;
+            var sliderLabel = new TextBlock
+            {
+                Text = $"⚡ Driver Reaction-Time Lead Buffer: {initialBuffer:0.00} s (Scales dynamic RPM lead in lower gears)",
+                Foreground = textWhite,
+                FontSize = 13.5,
+                Margin = new Thickness(0, 0, 0, 6)
+            };
+            var bufferSlider = new Slider
+            {
+                Minimum = 0.10,
+                Maximum = 0.40,
+                Value = initialBuffer,
+                TickFrequency = 0.01,
+                IsSnapToTickEnabled = true,
+                Margin = new Thickness(0, 0, 0, 4)
+            };
+            bufferSlider.ValueChanged += (s, e) =>
+            {
+                double val = Math.Round(bufferSlider.Value, 2);
+                sliderLabel.Text = $"⚡ Driver Reaction-Time Lead Buffer: {val:0.00} s (Scales dynamic RPM lead in lower gears)";
+                lock (_lock)
+                {
+                    _store.ReactionBufferFactor = val;
+                    _snapshotStore.ReactionBufferFactor = val;
+                    _isDataDirty = true;
+                }
+            };
+            settingsStack.Children.Add(sliderLabel);
+            settingsStack.Children.Add(bufferSlider);
+            settingsBorder.Child = settingsStack;
+            mainStack.Children.Add(settingsBorder);
+
+            var actionsBorder = new Border
+            {
+                Background = cardBg,
+                BorderBrush = borderBrush,
+                BorderThickness = new Thickness(1),
+                CornerRadius = new CornerRadius(8),
+                Padding = new Thickness(18)
+            };
+            var actionsStack = new StackPanel();
+            actionsStack.Children.Add(new TextBlock
+            {
+                Text = "🛠️ GARAGE INSPECTOR & MEMORY ACTIONS",
+                FontSize = 12,
+                FontWeight = FontWeights.Bold,
+                Foreground = accentBlue,
+                Margin = new Thickness(0, 0, 0, 12)
+            });
+
+            var wrapButtons = new WrapPanel { Orientation = Orientation.Horizontal };
+
+            Button MakeButton(string label, Brush bg, Action onClick)
+            {
+                var btn = new Button
+                {
+                    Content = label,
+                    Background = bg,
+                    Foreground = Brushes.White,
+                    FontWeight = FontWeights.SemiBold,
+                    FontSize = 13,
+                    Padding = new Thickness(14, 8, 14, 8),
+                    Margin = new Thickness(0, 0, 10, 10),
+                    BorderThickness = new Thickness(0),
+                    Cursor = System.Windows.Input.Cursors.Hand
+                };
+                btn.Click += (s, e) => onClick();
+                return btn;
+            }
+
+            wrapButtons.Children.Add(MakeButton("📊 Open Virtual Dyno & Tuning Report (HTML)", accentGreen, () => OpenGarageReportInBrowser()));
+            wrapButtons.Children.Add(MakeButton("📂 Open Common Data Folder (JSON / CarList)", accentBlue, () =>
+            {
+                try { Process.Start(new ProcessStartInfo { FileName = GetCommonDataDir(), UseShellExecute = true }); } catch { }
+            }));
+            wrapButtons.Children.Add(MakeButton("⚙️ Reset Current Car Gear Ratios (After Tuning)", new SolidColorBrush(Color.FromRgb(56, 63, 71)), () => Interlocked.Exchange(ref _resetRatiosRequested, 1)));
+            wrapButtons.Children.Add(MakeButton("⏱️ Reset Current Car Dragy Records", new SolidColorBrush(Color.FromRgb(56, 63, 71)), () => Interlocked.Exchange(ref _resetDragyRequested, 1)));
+            wrapButtons.Children.Add(MakeButton("🔄 Reset Current Car Full Memory", accentRed, () => Interlocked.Exchange(ref _resetCurrentRequested, 1)));
+
+            actionsStack.Children.Add(wrapButtons);
+            actionsBorder.Child = actionsStack;
+            mainStack.Children.Add(actionsBorder);
+
+            var uiTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(500) };
+            uiTimer.Tick += (s, e) =>
+            {
+                if (!mainStack.IsVisible) return;
+                lock (_lock)
+                {
+                    if (string.IsNullOrEmpty(_out.CarKey))
+                    {
+                        liveCarText.Text = $"Active Car ({_out.ActiveGameMode}): Waiting for on-track telemetry...";
+                        liveDynoText.Text = $"Saved Cars in Database: {_store.EngineProfiles.Count} | Audio Shift Beep: {(_store.ShiftBeepEnabled ? "ON" : "OFF")}";
+                        liveDragyText.Text = "Dragy Status: READY";
+                    }
+                    else
+                    {
+                        liveCarText.Text = $"Active Car [{_out.ActiveGameMode}]: {_out.CarName}  ({_out.CarKey})";
+                        double hp = _globalEngine.MaxPower / 745.7;
+                        liveDynoText.Text = $"Dyno Mapping: {_out.LiveMappingProgress:0.0}% ({_out.EngineMapStatus}) | Peak Power: {hp:0.1} HP @ {_out.RpmAtMaxPower:0} RPM | Shift Target: {_out.OptimalShiftRpm:0} RPM";
+                        string s0100 = _out.DragyBest0To100 > 0 ? $"{_out.DragyBest0To100:0.00} s" : "—";
+                        string s100200 = _out.DragyBest100To200 > 0 ? $"{_out.DragyBest100To200:0.00} s" : "—";
+                        string s0200 = _out.DragyBest0To200 > 0 ? $"{_out.DragyBest0To200:0.00} s" : "—";
+                        liveDragyText.Text = $"Dragy PB — 0-100 km/h: {s0100}  |  100-200 km/h: {s100200}  |  0-200 km/h: {s0200}   ({ _out.DragyStatus })";
+                    }
+                    if (beepCheck.IsChecked != _store.ShiftBeepEnabled)
+                        beepCheck.IsChecked = _store.ShiftBeepEnabled;
+                }
+            };
+            uiTimer.Start();
+
+            rootScroll.Content = mainStack;
+            return rootScroll;
         }
 
         public void Init(PluginManager pluginManager)
         {
             try {
-                string dir = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "PluginsData", "Common");
+                string dir = GetCommonDataDir();
                 string p = Path.Combine(dir, "FH6SmartShift_fh6SmartShiftingData.json");
                 if (File.Exists(p)) {
                     string todayBak = p + ".bak_" + DateTime.Now.ToString("yyyyMMdd");
@@ -236,6 +596,8 @@ namespace FH6SmartShift
             }
 
             _store = this.ReadCommonSettings<CarStore>(StoreKey, () => new CarStore()) ?? new CarStore();
+            if (_store.CarNames == null) _store.CarNames = new Dictionary<string, string>();
+            if (_store.ReactionBufferFactor < 0.10 || _store.ReactionBufferFactor > 0.45) _store.ReactionBufferFactor = 0.25;
             if (_store.SchemaVersion < 2) { _store.SchemaVersion = 2; this.SaveCommonSettings(StoreKey, _store); }
             
             bool globalBoostCleaned = false;
@@ -256,6 +618,8 @@ namespace FH6SmartShift
             if (globalBoostCleaned) _isDataDirty = true;
 
             _snapshotStore = CloneCarStore(_store);
+            EnsureAndLoadCarList();
+            _out.IsShiftBeepEnabled = _store.ShiftBeepEnabled;
             
             try { WriteHtmlGarageReport(_snapshotStore, ""); }
             catch (Exception ex) { Debug.WriteLine("[FH6SmartShift] Initial HTML report error: " + ex.Message); }
@@ -267,13 +631,18 @@ namespace FH6SmartShift
             pluginManager.AddAction("ResetAllCarsMemory", this.GetType(), (a, b) => Interlocked.Exchange(ref _resetAllRequested, 1));
             pluginManager.AddAction("ResetLimitGears", this.GetType(), (a, b) => Interlocked.Exchange(ref _resetLimitGearsRequested, 1));
             pluginManager.AddAction("ResetGearRatios", this.GetType(), (a, b) => Interlocked.Exchange(ref _resetRatiosRequested, 1));
+            pluginManager.AddAction("ResetDragyRecords", this.GetType(), (a, b) => Interlocked.Exchange(ref _resetDragyRequested, 1));
+            pluginManager.AddAction("ToggleShiftBeep", this.GetType(), (a, b) => Interlocked.Exchange(ref _toggleBeepRequested, 1));
             pluginManager.AddAction("OpenDynoReport", this.GetType(), (a, b) => OpenGarageReportInBrowser());
 
+            this.AttachDelegate("ActiveGameMode", () => _out.ActiveGameMode);
             this.AttachDelegate("MaxUsableRpm", () => _out.MaxUsableRpm);
             this.AttachDelegate("RevLimiterProximity", () => _out.RevLimiterProximity);
             this.AttachDelegate("LedActiveCount", () => _out.LedActiveCount);
             this.AttachDelegate("ShiftLightFlash", () => _out.ShiftLightFlash);
+            this.AttachDelegate("IsShiftBeepEnabled", () => _out.IsShiftBeepEnabled);
             this.AttachDelegate("CurrentCarKey", () => _out.CarKey);
+            this.AttachDelegate("CurrentCarName", () => _out.CarName);
             this.AttachDelegate("IsLearningComplete", () => _out.IsLearningComplete);
             this.AttachDelegate("ShiftTriggerRpm", () => _out.ShiftTriggerRpm);
             this.AttachDelegate("RpmAtMaxPower", () => _out.RpmAtMaxPower);
@@ -300,6 +669,16 @@ namespace FH6SmartShift
             this.AttachDelegate("LiveMappingProgress", () => _out.LiveMappingProgress);
             this.AttachDelegate("EngineMapStatus", () => _out.EngineMapStatus);
             this.AttachDelegate("MapCoverageBar", () => _out.MapCoverageBar);
+            this.AttachDelegate("CurrentGearStatusText", () => _out.CurrentGearStatusText);
+            this.AttachDelegate("CurrentGearColor", () => _out.CurrentGearColor);
+
+            this.AttachDelegate("Dragy_Last_0_100", () => _out.DragyLast0To100);
+            this.AttachDelegate("Dragy_Best_0_100", () => _out.DragyBest0To100);
+            this.AttachDelegate("Dragy_Last_100_200", () => _out.DragyLast100To200);
+            this.AttachDelegate("Dragy_Best_100_200", () => _out.DragyBest100To200);
+            this.AttachDelegate("Dragy_Last_0_200", () => _out.DragyLast0To200);
+            this.AttachDelegate("Dragy_Best_0_200", () => _out.DragyBest0To200);
+            this.AttachDelegate("Dragy_Status", () => _out.DragyStatus);
             
             this.AttachDelegate("Dbg_SteerRaw", () => _out.DbgSteerRaw);
             this.AttachDelegate("Dbg_YawRaw", () => _out.DbgYawRaw);
@@ -343,6 +722,7 @@ namespace FH6SmartShift
             {
                 try
                 {
+                    EnsureAndLoadCarList();
                     CarStore snapshotCopy;
                     string activeKey;
                     lock (_lock)
@@ -382,7 +762,7 @@ namespace FH6SmartShift
 <html lang=""en"">
 <head>
 <meta charset=""UTF-8"">
-<title>FH6SmartShift — Virtual Dyno &amp; Gearbox Inspector</title>
+<title>FH6SmartShift v1.1.0 — FH6 &amp; Forza Motorsport Virtual Dyno, Dragy &amp; Tuning Inspector</title>
 <style>
   * { box-sizing: border-box; }
   body {
@@ -392,41 +772,47 @@ namespace FH6SmartShift
     margin: 0;
     padding: 24px;
   }
-  .container { max-width: 1200px; margin: 0 auto; }
+  .container { max-width: 1240px; margin: 0 auto; }
   .header {
     display: flex;
     justify-content: space-between;
     align-items: center;
     flex-wrap: wrap;
-    gap: 16px;
+    gap: 12px;
     background: #161b22;
     border: 1px solid #30363d;
     border-radius: 10px;
-    padding: 18px 24px;
-    margin-bottom: 20px;
+    padding: 16px 22px;
+    margin-bottom: 18px;
   }
-  .header h1 { margin: 0; font-size: 21px; color: #fff; }
-  .controls { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
-  .file-label {
-    background: #238636;
-    color: #fff;
-    padding: 9px 15px;
+  .header h1 { margin: 0; font-size: 19.5px; color: #fff; }
+  .controls { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  .btn {
+    background: #21262d;
+    color: #e6edf3;
+    border: 1px solid #30363d;
+    padding: 8px 12px;
     border-radius: 6px;
     font-weight: 600;
     cursor: pointer;
-    font-size: 13.5px;
+    font-size: 12.5px;
+    transition: background 0.15s;
   }
-  .file-label:hover { background: #2ea043; }
+  .btn:hover { background: #30363d; }
+  .btn-green { background: #238636; border-color: #2ea043; color: #fff; }
+  .btn-green:hover { background: #2ea043; }
+  .btn-blue { background: #1f6feb; border-color: #388bfd; color: #fff; }
+  .btn-blue:hover { background: #388bfd; }
   input[type=""file""] { display: none; }
   select {
     background: #0d1117;
     color: #e6edf3;
     border: 1px solid #30363d;
-    padding: 9px 14px;
+    padding: 8px 12px;
     border-radius: 6px;
-    font-size: 14px;
+    font-size: 13.5px;
     font-weight: 600;
-    min-width: 310px;
+    min-width: 320px;
   }
   .profile-banner {
     background: #161b22;
@@ -436,34 +822,36 @@ namespace FH6SmartShift
     border-bottom: 1px solid #30363d;
     border-radius: 8px;
     padding: 16px 20px;
-    margin-bottom: 20px;
+    margin-bottom: 18px;
     font-size: 15px;
     line-height: 1.5;
   }
-  .copy-btn {
-    background: #21262d;
-    color: #c9d1d9;
-    border: 1px solid #30363d;
-    padding: 5px 12px;
-    border-radius: 5px;
-    cursor: pointer;
-    font-size: 12px;
-    float: right;
+  .dragy-grid {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 14px;
+    margin-bottom: 20px;
   }
-  .copy-btn:hover { background: #30363d; }
+  .dragy-card {
+    background: #161b22;
+    border: 1px solid #30363d;
+    border-radius: 8px;
+    padding: 14px 18px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+  }
+  .dragy-label { font-size: 12.5px; color: #8b949e; font-weight: 700; text-transform: uppercase; letter-spacing: 0.8px; }
+  .dragy-val { font-family: 'Consolas', monospace; font-size: 24px; font-weight: 700; color: #3fb950; }
   .table-wrap {
     background: #ffffff;
     color: #1f2328;
     border-radius: 8px;
     overflow: hidden;
     box-shadow: 0 8px 24px rgba(0,0,0,0.4);
-    margin-bottom: 24px;
+    margin-bottom: 20px;
   }
-  table {
-    width: 100%;
-    border-collapse: collapse;
-    font-size: 14.5px;
-  }
+  table { width: 100%; border-collapse: collapse; font-size: 14.5px; }
   th {
     background: #f6f8fa;
     color: #1f2328;
@@ -472,10 +860,7 @@ namespace FH6SmartShift
     padding: 10px 14px;
     border: 1px solid #d0d7de;
   }
-  td {
-    padding: 9px 14px;
-    border: 1px solid #d0d7de;
-  }
+  td { padding: 9px 14px; border: 1px solid #d0d7de; }
   tr:nth-child(even) td { background: #fcfcfd; }
   .dot {
     display: inline-block;
@@ -491,6 +876,24 @@ namespace FH6SmartShift
   .dot-yellow { background: #d4ac0d; }
   .dot-blue { background: #1f6feb; }
   .dot-red { background: #cf222e; }
+  .advisor-card {
+    background: #161b22;
+    border: 1px solid #30363d;
+    border-radius: 10px;
+    padding: 18px 22px;
+    margin-bottom: 20px;
+  }
+  .advisor-card h3 { margin: 0 0 12px 0; font-size: 16px; color: #fff; }
+  .adv-item {
+    padding: 9px 12px;
+    border-radius: 6px;
+    margin-bottom: 8px;
+    font-size: 14px;
+    line-height: 1.45;
+  }
+  .adv-ok { background: rgba(46, 160, 67, 0.12); border-left: 4px solid #3fb950; color: #e6edf3; }
+  .adv-warn { background: rgba(210, 153, 34, 0.14); border-left: 4px solid #d29922; color: #e6edf3; }
+  .adv-info { background: rgba(56, 139, 253, 0.12); border-left: 4px solid #58a6ff; color: #e6edf3; }
   .chart-card {
     background: #161b22;
     border: 1px solid #30363d;
@@ -514,18 +917,46 @@ namespace FH6SmartShift
 
 <div class=""container"">
   <div class=""header"">
-    <h1>🏎️ FH6SmartShift — Virtual Dyno &amp; Gearbox Inspector</h1>
+    <h1>🏎️ FH6SmartShift — Dyno, Dragy &amp; Gearbox Tuning Inspector</h1>
     <div class=""controls"">
       <select id=""carSelect"" onchange=""renderCar(this.value)""></select>
-      <label class=""file-label"">
-        📂 Load External JSON
-        <input type=""file"" id=""jsonFile"" accept="".json"">
+      <button class=""btn"" onclick=""renameCurrentCar()"">✏️ Name Car</button>
+      <button class=""btn"" onclick=""exportCarListJson()"">💾 CarList.json</button>
+      <button class=""btn btn-blue"" onclick=""exportSingleCarProfile()"">📤 Export Car</button>
+      <label class=""btn btn-green"">
+        📥 Import / Merge JSON
+        <input type=""file"" id=""mergeFile"" accept="".json"">
       </label>
+      <button class=""btn"" id=""saveMergedBtn"" style=""display:none;border-color:#d29922;color:#e3b341;"" onclick=""downloadFullDatabase()"">💾 Save Merged DB</button>
     </div>
   </div>
 
   <div class=""profile-banner"" id=""profileSummary"">
-    No car profiles saved yet. Drive a car at wide-open throttle in Forza Horizon 6 to populate the Virtual Dyno database.
+    No car profiles saved yet. Drive a car at wide-open throttle in Forza Horizon 6 or Forza Motorsport to populate the Virtual Dyno database.
+  </div>
+
+  <div class=""dragy-grid"">
+    <div class=""dragy-card"">
+      <div>
+        <div class=""dragy-label"">⏱️ 0–100 km/h (Best PB)</div>
+        <div style=""font-size:12px;color:#6e7681;"">Standing Launch Telemetry</div>
+      </div>
+      <div class=""dragy-val"" id=""dragy0to100"">—</div>
+    </div>
+    <div class=""dragy-card"">
+      <div>
+        <div class=""dragy-label"">🚀 100–200 km/h (Best PB)</div>
+        <div style=""font-size:12px;color:#6e7681;"">Rolling / Standing Pull</div>
+      </div>
+      <div class=""dragy-val"" id=""dragy100to200"">—</div>
+    </div>
+    <div class=""dragy-card"">
+      <div>
+        <div class=""dragy-label"">🏁 0–200 km/h (Best PB)</div>
+        <div style=""font-size:12px;color:#6e7681;"">Full Standing Sprint</div>
+      </div>
+      <div class=""dragy-val"" id=""dragy0to200"">—</div>
+    </div>
   </div>
 
   <div class=""table-wrap"">
@@ -545,6 +976,11 @@ namespace FH6SmartShift
     </table>
   </div>
 
+  <div class=""advisor-card"">
+    <h3>🔧 Automated Gearbox Tuning Advisor (Telemetry Analysis)</h3>
+    <div id=""tuningAdvisorBody""></div>
+  </div>
+
   <div class=""chart-card"">
     <div class=""chart-header"">
       <h3>📈 401-Band Virtual Dyno Curve (Power HP &amp; Torque Nm)</h3>
@@ -560,23 +996,133 @@ namespace FH6SmartShift
 <script>
 let dbData = " + jsonPayload + @";
 let defaultCarKey = " + safeActiveKey + @";
+let localNames = JSON.parse(localStorage.getItem('fh6_custom_car_names') || '{}');
 
-document.getElementById('jsonFile').addEventListener('change', function(e) {
+function getRawCarName(key) {
+  const cleanKey = key.replace(/^FM_/, '');
+  const parts = cleanKey.split('_');
+  const ord = parts[0];
+  if (localNames[key]) return localNames[key];
+  if (localNames[ord]) return localNames[ord];
+  if (dbData.CarNames && dbData.CarNames[key]) return dbData.CarNames[key];
+  if (dbData.CarNames && dbData.CarNames[ord]) return dbData.CarNames[ord];
+  return `Car #${ord}`;
+}
+
+function getCarName(key) {
+  const gameTag = key.startsWith('FM_') ? '[FM] ' : '[FH] ';
+  return gameTag + getRawCarName(key);
+}
+
+function renameCurrentCar() {
+  const sel = document.getElementById('carSelect');
+  const key = sel.value;
+  if (!key) return;
+  const current = getRawCarName(key);
+  const entered = prompt(`Enter custom name for ${key} (e.g. 'Audi RS 6 Avant 2021'):`, current);
+  if (entered !== null && entered.trim() !== '') {
+    localNames[key] = entered.trim();
+    if (!dbData.CarNames) dbData.CarNames = {};
+    dbData.CarNames[key] = entered.trim();
+    localStorage.setItem('fh6_custom_car_names', JSON.stringify(localNames));
+    populateCarSelect(key);
+  }
+}
+
+function exportCarListJson() {
+  const merged = Object.assign({}, dbData.CarNames || {}, localNames);
+  const blob = new Blob([JSON.stringify(merged, null, 2)], {type: 'application/json;charset=utf-8'});
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = 'FH6SmartShift_CarList.json';
+  a.click();
+}
+
+function exportSingleCarProfile() {
+  const key = document.getElementById('carSelect').value;
+  if (!key) return;
+  const singlePayload = {
+     FH6SmartShiftSingleCar: true,
+     CarKey: key,
+     CarName: getRawCarName(key),
+     GearRatios: (dbData.GearRatios && dbData.GearRatios[key]) || {},
+     EngineProfile: (dbData.EngineProfiles && dbData.EngineProfiles[key]) || {},
+     AdvancedGears: (dbData.AdvancedGears && dbData.AdvancedGears[key]) || {}
+  };
+  const blob = new Blob([JSON.stringify(singlePayload, null, 2)], {type: 'application/json;charset=utf-8'});
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = `FH6_CarProfile_${key}.json`;
+  a.click();
+}
+
+document.getElementById('mergeFile').addEventListener('change', function(e) {
   const file = e.target.files[0];
   if (!file) return;
   const reader = new FileReader();
   reader.onload = function(evt) {
     try {
-      dbData = JSON.parse(evt.target.result);
-      populateCarSelect();
+      const incoming = JSON.parse(evt.target.result);
+      if (!dbData.GearRatios) dbData.GearRatios = {};
+      if (!dbData.EngineProfiles) dbData.EngineProfiles = {};
+      if (!dbData.AdvancedGears) dbData.AdvancedGears = {};
+      if (!dbData.CarNames) dbData.CarNames = {};
+
+      let lastMergedKey = '';
+      let importedCount = 0;
+
+      if (incoming.FH6SmartShiftSingleCar && incoming.CarKey) {
+        const k = incoming.CarKey;
+        dbData.GearRatios[k] = incoming.GearRatios || {};
+        dbData.EngineProfiles[k] = incoming.EngineProfile || {};
+        dbData.AdvancedGears[k] = incoming.AdvancedGears || {};
+        if (incoming.CarName) {
+          dbData.CarNames[k] = incoming.CarName;
+          localNames[k] = incoming.CarName;
+        }
+        lastMergedKey = k;
+        importedCount = 1;
+      } else if (incoming.EngineProfiles || incoming.GearRatios) {
+        const keys = new Set([
+          ...Object.keys(incoming.EngineProfiles || {}),
+          ...Object.keys(incoming.GearRatios || {})
+        ]);
+        keys.forEach(k => {
+          if (incoming.GearRatios && incoming.GearRatios[k]) dbData.GearRatios[k] = incoming.GearRatios[k];
+          if (incoming.EngineProfiles && incoming.EngineProfiles[k]) dbData.EngineProfiles[k] = incoming.EngineProfiles[k];
+          if (incoming.AdvancedGears && incoming.AdvancedGears[k]) dbData.AdvancedGears[k] = incoming.AdvancedGears[k];
+          lastMergedKey = k;
+          importedCount++;
+        });
+        if (incoming.CarNames) {
+          Object.assign(dbData.CarNames, incoming.CarNames);
+        }
+      } else {
+        alert('Unrecognized JSON format.');
+        return;
+      }
+
+      document.getElementById('saveMergedBtn').style.display = 'inline-block';
+      populateCarSelect(lastMergedKey);
+      alert(`Successfully imported/merged ${importedCount} car profile(s)! Click '💾 Save Merged DB' if you want to save the combined database file.`);
     } catch (err) {
       alert('Invalid JSON file: ' + err.message);
     }
   };
   reader.readAsText(file);
+  e.target.value = '';
 });
 
-function populateCarSelect() {
+function downloadFullDatabase() {
+  dbData.CarNames = Object.assign({}, dbData.CarNames || {}, localNames);
+  const blob = new Blob([JSON.stringify(dbData, null, 2)], {type: 'application/json;charset=utf-8'});
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = 'FH6SmartShift_fh6SmartShiftingData.json';
+  a.click();
+}
+
+function populateCarSelect(forceKey) {
   const sel = document.getElementById('carSelect');
   sel.innerHTML = '';
   const allKeys = new Set([
@@ -590,25 +1136,34 @@ function populateCarSelect() {
     opt.value = k;
     const dtMap = {'DT0':'FWD', 'DT1':'RWD', 'DT2':'AWD'};
     let label = k;
-    const parts = k.split('_');
+    const cleanKey = k.replace(/^FM_/, '');
+    const parts = cleanKey.split('_');
+    const cName = getCarName(k);
     if (parts.length === 4) {
-      label = `Car #${parts[0]} | ${parts[1]} | ${dtMap[parts[2]] || parts[2]} | Gauge ${parts[3].replace('R','')} RPM (${k})`;
+      label = `${cName} | ${parts[1]} | ${dtMap[parts[2]] || parts[2]} | Gauge ${parts[3].replace('R','')} RPM (${k})`;
     }
     opt.textContent = label;
     sel.appendChild(opt);
   });
 
   if (keys.length > 0) {
-    const target = (defaultCarKey && keys.includes(defaultCarKey)) ? defaultCarKey : keys[0];
+    const target = (forceKey && keys.includes(forceKey)) ? forceKey : ((defaultCarKey && keys.includes(defaultCarKey)) ? defaultCarKey : keys[0]);
     sel.value = target;
     renderCar(target);
   }
+}
+
+function getBandValue(map, rpm) {
+  if (!Array.isArray(map) || rpm <= 0) return 0;
+  const idx = Math.min(400, Math.max(0, Math.round(rpm / 50)));
+  return map[idx] || 0;
 }
 
 function renderCar(key) {
   const ep = (dbData.EngineProfiles && dbData.EngineProfiles[key]) || {};
   const ratios = (dbData.GearRatios && dbData.GearRatios[key]) || {};
   const adv = (dbData.AdvancedGears && dbData.AdvancedGears[key]) || {};
+  const cName = getCarName(key);
 
   const gaugeMatch = key.match(/_R(\d+)$/);
   const gaugeRpm = gaugeMatch ? parseInt(gaugeMatch[1], 10) : 8000;
@@ -645,18 +1200,25 @@ function renderCar(key) {
     : `and standard rev limiter up to <strong>${actualLimiter.toFixed(0)} RPM</strong> (on an ${gaugeRpm} RPM gauge cluster).`;
 
   document.getElementById('profileSummary').innerHTML = `
-    <button class=""copy-btn"" onclick=""copySummary()"">📋 Copy Summary</button>
-    <strong>Engine &amp; Dyno Profile (<code>${key}</code>):</strong>
+    <button class=""btn"" style=""float:right;padding:4px 10px;font-size:12px;"" onclick=""copySummary()"">📋 Copy Summary</button>
+    <strong>Engine &amp; Dyno Profile — ${cName} (<code>${key}</code>):</strong>
     Peak power of <strong>${hp.toFixed(1)} HP (${kw.toFixed(1)} kW)</strong> at <strong>${rpmP.toFixed(0)} RPM</strong>,
     peak torque of <strong>${nm.toFixed(1)} Nm</strong> at <strong>${rpmT.toFixed(0)} RPM</strong>,
     <strong>${boostText}</strong>, ${limiterText}
   `;
+
+  document.getElementById('dragy0to100').textContent = (ep.Best0To100 && ep.Best0To100 > 0) ? ep.Best0To100.toFixed(2) + ' s' : '—';
+  document.getElementById('dragy100to200').textContent = (ep.Best100To200 && ep.Best100To200 > 0) ? ep.Best100To200.toFixed(2) + ' s' : '—';
+  document.getElementById('dragy0to200').textContent = (ep.Best0To200 && ep.Best0To200 > 0) ? ep.Best0To200.toFixed(2) + ' s' : '—';
 
   const tbody = document.getElementById('gearTableBody');
   tbody.innerHTML = '';
 
   const gearNums = Object.keys(ratios).map(Number).filter(n => ratios[n] > 0).sort((a,b) => a - b);
   const maxGear = gearNums.length > 0 ? Math.max(...gearNums) : 6;
+
+  const advisorTips = [];
+  let optimalTransitions = 0;
 
   for (let g = 1; g <= maxGear; g++) {
     const rNow = ratios[g] || 0;
@@ -705,6 +1267,36 @@ function renderCar(key) {
       const refShift = physTargetVal > 0 ? physTargetVal : actualLimiter;
       const landRpm = Math.round(refShift * dropRatio);
       landStr = `~${landRpm} RPM`;
+
+      const pAtLand = getBandValue(ep.PowerMap, landRpm);
+      const bAtLand = getBandValue(ep.BoostMap, landRpm);
+
+      if (rpmT > 2500 && landRpm < rpmT * 0.90 && g >= 1) {
+        advisorTips.push({
+          type: 'warn',
+          text: `⚠️ <strong>Gear ${g} → ${g+1} Too Wide (${dropPct}% drop):</strong> Landing at <strong>~${landRpm} RPM</strong> drops below Peak Torque (${rpmT.toFixed(0)} RPM). Shorten <strong>Gear ${g+1}</strong> (move slider toward Acceleration) so it lands closer to ${Math.round(rpmT)} RPM.`
+        });
+      } else if (ep.MaxPower > 0 && pAtLand > 0 && pAtLand < ep.MaxPower * 0.78 && g >= 2) {
+        const pLossPct = ((1.0 - (pAtLand / ep.MaxPower)) * 100).toFixed(1);
+        advisorTips.push({
+          type: 'warn',
+          text: `⚠️ <strong>Gear ${g} → ${g+1} Power Drop (-${pLossPct}% vs Peak):</strong> Landing at <strong>~${landRpm} RPM</strong> leaves the engine with only ${(pAtLand/745.7).toFixed(0)} HP. Consider tightening the gap between Gear ${g} and Gear ${g+1}.`
+        });
+      } else if (g <= 4 && dropRatio > 0.895) {
+        advisorTips.push({
+          type: 'info',
+          text: `ℹ️ <strong>Gear ${g} → ${g+1} Very Close Ratio (${dropPct}% drop):</strong> Tight spacing in lower gears increases shift frequency. You can lengthen Gear ${g+1} slightly unless this is a dedicated 8–10 speed close-ratio build.`
+        });
+      } else {
+        optimalTransitions++;
+      }
+
+      if (maxBoostPsi > 2.5 && bAtLand > 0 && bAtLand < maxBoostPsi * 0.72) {
+        advisorTips.push({
+          type: 'warn',
+          text: `🐌 <strong>Turbo Lag Risk on Gear ${g} → ${g+1}:</strong> Boost pressure at ~${landRpm} RPM is only <strong>${bAtLand.toFixed(1)} psi</strong> (vs ${maxBoostPsi.toFixed(1)} psi peak). Shorten Gear ${g+1} to keep the turbo spooled!`
+        });
+      }
     }
 
     const tr = document.createElement('tr');
@@ -718,6 +1310,34 @@ function renderCar(key) {
       <td>${statusHtml}</td>
     `;
     tbody.appendChild(tr);
+  }
+
+  const advContainer = document.getElementById('tuningAdvisorBody');
+  advContainer.innerHTML = '';
+
+  if (optimalTransitions > 0) {
+    const okDiv = document.createElement('div');
+    okDiv.className = 'adv-item adv-ok';
+    okDiv.innerHTML = `✅ <strong>Powerband Alignment:</strong> <strong>${optimalTransitions}</strong> gear transition(s) land squarely inside the optimal power window between Peak Torque (${rpmT.toFixed(0)} RPM) and Peak Power (${rpmP.toFixed(0)} RPM).`;
+    advContainer.appendChild(okDiv);
+  }
+
+  if (rpmP > 0 && actualLimiter - rpmP > 750) {
+    const overRevDiv = document.createElement('div');
+    overRevDiv.className = 'adv-item adv-info';
+    overRevDiv.innerHTML = `💡 <strong>Early Peak Power Characteristic:</strong> Peak power occurs at <strong>${rpmP.toFixed(0)} RPM</strong> (${Math.round(actualLimiter - rpmP)} RPM before the ${actualLimiter.toFixed(0)} RPM limiter). Shifting at the green <strong>(P)</strong> targets instead of redline yields maximum wheel thrust.`;
+    advContainer.appendChild(overRevDiv);
+  }
+
+  advisorTips.forEach(tip => {
+    const d = document.createElement('div');
+    d.className = 'adv-item ' + (tip.type === 'warn' ? 'adv-warn' : 'adv-info');
+    d.innerHTML = tip.text;
+    advContainer.appendChild(d);
+  });
+
+  if (advisorTips.length === 0 && optimalTransitions === 0) {
+    advContainer.innerHTML = `<div class=""adv-item adv-info"">Drive through all gears at wide-open throttle in Forza Horizon 6 or Forza Motorsport to unlock automated gearbox ratio recommendations.</div>`;
   }
 
   drawDynoChart(ep);
@@ -792,7 +1412,13 @@ populateCarSelect();
 
         private CarStore CloneCarStore(CarStore source)
         {
-            var clone = new CarStore { SchemaVersion = source.SchemaVersion };
+            var clone = new CarStore
+            {
+                SchemaVersion = source.SchemaVersion,
+                ShiftBeepEnabled = source.ShiftBeepEnabled,
+                ReactionBufferFactor = source.ReactionBufferFactor,
+                CarNames = source.CarNames != null ? new Dictionary<string, string>(source.CarNames) : new Dictionary<string, string>()
+            };
             foreach (var ratio in source.GearRatios) clone.GearRatios[ratio.Key] = new Dictionary<int, double>(ratio.Value);
             foreach (var ag in source.AdvancedGears) 
             {
@@ -807,7 +1433,13 @@ populateCarSelect();
                 if (engine.Value.BoostMap != null && engine.Value.BoostMap.Length == 401) Array.Copy(engine.Value.BoostMap, boostCopy, 401);
                 
                 clone.EngineProfiles[engine.Key] = new SavedEngineProfile { 
-                    PowerMap = mapCopy, TorqueMap = torqueCopy, BoostMap = boostCopy, MaxPower = engine.Value.MaxPower, RpmAtMaxPower = engine.Value.RpmAtMaxPower, MaxTorque = engine.Value.MaxTorque, RpmAtMaxTorque = engine.Value.RpmAtMaxTorque, GhostLimiterRpm = engine.Value.GhostLimiterRpm
+                    PowerMap = mapCopy, TorqueMap = torqueCopy, BoostMap = boostCopy,
+                    MaxPower = engine.Value.MaxPower, RpmAtMaxPower = engine.Value.RpmAtMaxPower,
+                    MaxTorque = engine.Value.MaxTorque, RpmAtMaxTorque = engine.Value.RpmAtMaxTorque,
+                    GhostLimiterRpm = engine.Value.GhostLimiterRpm,
+                    Best0To100 = engine.Value.Best0To100,
+                    Best100To200 = engine.Value.Best100To200,
+                    Best0To200 = engine.Value.Best0To200
                 };
             }
             return clone;
@@ -816,6 +1448,12 @@ populateCarSelect();
         private void UpdateSnapshotWithCurrentCar()
         {
             if (string.IsNullOrEmpty(_key)) return;
+            _snapshotStore.ShiftBeepEnabled = _store.ShiftBeepEnabled;
+            _snapshotStore.ReactionBufferFactor = _store.ReactionBufferFactor;
+            if (_store.CarNames != null)
+            {
+                foreach (var kvp in _store.CarNames) _snapshotStore.CarNames[kvp.Key] = kvp.Value;
+            }
             
             if (_store.GearRatios.TryGetValue(_key, out var ratioDict)) 
                 _snapshotStore.GearRatios[_key] = new Dictionary<int, double>(ratioDict);
@@ -839,7 +1477,10 @@ populateCarSelect();
                     PowerMap = pMap, TorqueMap = tMap, BoostMap = bMap,
                     MaxPower = ep.MaxPower, RpmAtMaxPower = ep.RpmAtMaxPower,
                     MaxTorque = ep.MaxTorque, RpmAtMaxTorque = ep.RpmAtMaxTorque,
-                    GhostLimiterRpm = ep.GhostLimiterRpm
+                    GhostLimiterRpm = ep.GhostLimiterRpm,
+                    Best0To100 = ep.Best0To100,
+                    Best100To200 = ep.Best100To200,
+                    Best0To200 = ep.Best0To200
                 };
             }
         }
@@ -884,12 +1525,23 @@ populateCarSelect();
 
         private void SaveEngineProfileToStore()
         {
-            if (string.IsNullOrEmpty(_key) || _globalEngine == null || _globalEngine.MaxPower == 0) return;
+            if (string.IsNullOrEmpty(_key) || _globalEngine == null) return;
+            if (_globalEngine.MaxPower == 0 && _globalEngine.Best0To100 == 0 && _globalEngine.Best100To200 == 0) return;
+
             var profileCopy = new double[401]; var torqueCopy = new double[401]; var boostCopy = new double[401];
             Array.Copy(_globalEngine.PowerMap, profileCopy, 401); 
             Array.Copy(_globalEngine.TorqueMap, torqueCopy, 401);
             Array.Copy(_globalEngine.BoostMap, boostCopy, 401);
-            _store.EngineProfiles[_key] = new SavedEngineProfile { PowerMap = profileCopy, TorqueMap = torqueCopy, BoostMap = boostCopy, MaxPower = _globalEngine.MaxPower, RpmAtMaxPower = _globalEngine.RpmAtMaxPower, MaxTorque = _globalEngine.MaxTorque, RpmAtMaxTorque = _globalEngine.RpmAtMaxTorque, GhostLimiterRpm = _globalEngine.GhostLimiterRpm };
+            _store.EngineProfiles[_key] = new SavedEngineProfile
+            {
+                PowerMap = profileCopy, TorqueMap = torqueCopy, BoostMap = boostCopy,
+                MaxPower = _globalEngine.MaxPower, RpmAtMaxPower = _globalEngine.RpmAtMaxPower,
+                MaxTorque = _globalEngine.MaxTorque, RpmAtMaxTorque = _globalEngine.RpmAtMaxTorque,
+                GhostLimiterRpm = _globalEngine.GhostLimiterRpm,
+                Best0To100 = _globalEngine.Best0To100,
+                Best100To200 = _globalEngine.Best100To200,
+                Best0To200 = _globalEngine.Best0To200
+            };
         }
 
         private void SaveGearTrigger(int gear, GearState gs)
@@ -1020,7 +1672,7 @@ populateCarSelect();
 
         private bool IsRatioMonotonicAcrossAllGears(int targetGear, double candidateRatio)
         {
-            if (candidateRatio <= 5.0 || candidateRatio > 600.0) return false;
+            if (candidateRatio <= 4.0 || candidateRatio > 650.0) return false;
 
             foreach (var kvp in _gearStates)
             {
@@ -1029,7 +1681,7 @@ populateCarSelect();
                 if (otherGear == targetGear || otherRatio <= 0) continue;
 
                 int gearDiff = Math.Abs(targetGear - otherGear);
-                double minStepFactor = Math.Pow(1.035, gearDiff);
+                double minStepFactor = Math.Pow(1.018, gearDiff);
 
                 if (otherGear < targetGear)
                 {
@@ -1238,11 +1890,132 @@ populateCarSelect();
 
         private double GetDynamicReactionBuffer(double rpmAccel, int currentGear)
         {
-            double buffer = rpmAccel * 0.25; 
+            double factor = (_store != null && _store.ReactionBufferFactor >= 0.10) ? _store.ReactionBufferFactor : 0.25;
+            double buffer = rpmAccel * factor; 
             if (buffer < 50.0) return 50.0;
             if (currentGear <= 2) { if (buffer > 1500.0) return 1500.0; }
             else { if (buffer > 600.0) return 600.0; }
             return buffer; 
+        }
+
+        private void UpdateDragyTimers(double speedKmh, double now, double accel, double brake, bool isGrounded, int currentGear)
+        {
+            if (currentGear < 1 || !isGrounded || brake > 40.0)
+            {
+                if (speedKmh < 1.5)
+                {
+                    _dragyArmedFromStop = true;
+                    _dragyRunningFromStop = false;
+                    _dragyPassed100FromStop = false;
+                    _out.DragyStatus = "READY (0 KM/H)";
+                }
+                else
+                {
+                    _dragyRunningFromStop = false;
+                    _dragyRunning100To200 = false;
+                }
+                _prevSpeedKmhDragy = speedKmh;
+                _prevTimeDragy = now;
+                return;
+            }
+
+            double dt = now - _prevTimeDragy;
+            if (dt <= 0.0001 || dt > 0.25)
+            {
+                _prevSpeedKmhDragy = speedKmh;
+                _prevTimeDragy = now;
+                return;
+            }
+
+            if (speedKmh < 1.5)
+            {
+                _dragyArmedFromStop = true;
+                _dragyRunningFromStop = false;
+                _dragyPassed100FromStop = false;
+                _dragyRunning100To200 = false;
+                _out.DragyStatus = "READY (LAUNCH)";
+            }
+
+            if (_dragyArmedFromStop && !_dragyRunningFromStop && _prevSpeedKmhDragy < 1.5 && speedKmh >= 1.5 && accel >= 80.0)
+            {
+                double frac = (1.5 - _prevSpeedKmhDragy) / Math.Max(0.01, speedKmh - _prevSpeedKmhDragy);
+                _dragyStart0Time = _prevTimeDragy + (Math.Max(0.0, Math.Min(1.0, frac)) * dt);
+                _dragyRunningFromStop = true;
+                _dragyArmedFromStop = false;
+                _dragyPassed100FromStop = false;
+                _out.DragyStatus = "TIMING 0-100...";
+            }
+
+            if (_prevSpeedKmhDragy < 100.0 && speedKmh >= 100.0 && accel >= 120.0)
+            {
+                double frac100 = (100.0 - _prevSpeedKmhDragy) / Math.Max(0.01, speedKmh - _prevSpeedKmhDragy);
+                double exactCross100Time = _prevTimeDragy + (Math.Max(0.0, Math.Min(1.0, frac100)) * dt);
+
+                if (_dragyRunningFromStop && !_dragyPassed100FromStop)
+                {
+                    double t0To100 = exactCross100Time - _dragyStart0Time;
+                    if (t0To100 > 0.8 && t0To100 < 25.0)
+                    {
+                        _out.DragyLast0To100 = Math.Round(t0To100, 2);
+                        if (_globalEngine.Best0To100 <= 0 || t0To100 < _globalEngine.Best0To100)
+                        {
+                            _globalEngine.Best0To100 = Math.Round(t0To100, 2);
+                            _out.DragyBest0To100 = _globalEngine.Best0To100;
+                            _isDataDirty = true;
+                        }
+                        _out.DragyStatus = $"0-100: {_out.DragyLast0To100:0.00}s";
+                    }
+                    _dragyPassed100FromStop = true;
+                }
+
+                _dragyStart100Time = exactCross100Time;
+                _dragyRunning100To200 = true;
+            }
+
+            if (_prevSpeedKmhDragy < 200.0 && speedKmh >= 200.0)
+            {
+                double frac200 = (200.0 - _prevSpeedKmhDragy) / Math.Max(0.01, speedKmh - _prevSpeedKmhDragy);
+                double exactCross200Time = _prevTimeDragy + (Math.Max(0.0, Math.Min(1.0, frac200)) * dt);
+
+                if (_dragyRunning100To200)
+                {
+                    double t100To200 = exactCross200Time - _dragyStart100Time;
+                    if (t100To200 > 1.0 && t100To200 < 35.0)
+                    {
+                        _out.DragyLast100To200 = Math.Round(t100To200, 2);
+                        if (_globalEngine.Best100To200 <= 0 || t100To200 < _globalEngine.Best100To200)
+                        {
+                            _globalEngine.Best100To200 = Math.Round(t100To200, 2);
+                            _out.DragyBest100To200 = _globalEngine.Best100To200;
+                            _isDataDirty = true;
+                        }
+                        _out.DragyStatus = $"100-200: {_out.DragyLast100To200:0.00}s";
+                    }
+                    _dragyRunning100To200 = false;
+                }
+
+                if (_dragyRunningFromStop)
+                {
+                    double t0To200 = exactCross200Time - _dragyStart0Time;
+                    if (t0To200 > 2.0 && t0To200 < 50.0)
+                    {
+                        _out.DragyLast0To200 = Math.Round(t0To200, 2);
+                        if (_globalEngine.Best0To200 <= 0 || t0To200 < _globalEngine.Best0To200)
+                        {
+                            _globalEngine.Best0To200 = Math.Round(t0To200, 2);
+                            _out.DragyBest0To200 = _globalEngine.Best0To200;
+                            _isDataDirty = true;
+                        }
+                    }
+                    _dragyRunningFromStop = false;
+                }
+            }
+
+            if (_dragyRunningFromStop && (now - _dragyStart0Time) > 35.0) _dragyRunningFromStop = false;
+            if (_dragyRunning100To200 && (speedKmh < 94.0 || (now - _dragyStart100Time) > 30.0)) _dragyRunning100To200 = false;
+
+            _prevSpeedKmhDragy = speedKmh;
+            _prevTimeDragy = now;
         }
 
         private void ResetOutputs()
@@ -1250,6 +2023,7 @@ populateCarSelect();
             lock (_lock)
             {
                 _out.CarKey = "";
+                _out.CarName = "Unknown Car";
                 _out.MaxUsableRpm = 0;
                 _out.RevLimiterProximity = 0;
                 _out.LedActiveCount = 0;
@@ -1281,6 +2055,8 @@ populateCarSelect();
                 _out.DbgChassisDive = 0.0;
                 _out.EngineMapStatus = "LEARN"; 
                 _out.MapCoverageBar = "[░░░░░░░░░░░░░░░░░░░░]";
+                _out.CurrentGearStatusText = "-";
+                _out.CurrentGearColor = "#00000000";
                 _shiftLightActive = false;
                 _smoothedLedProximity = 0.0;
                 _currentLedStage = 0;
@@ -1326,13 +2102,49 @@ populateCarSelect();
             bool doResetCurrent = Interlocked.Exchange(ref _resetCurrentRequested, 0) == 1;
             bool doResetLimitGears = Interlocked.Exchange(ref _resetLimitGearsRequested, 0) == 1;
             bool doResetRatios = Interlocked.Exchange(ref _resetRatiosRequested, 0) == 1;
+            bool doResetDragy = Interlocked.Exchange(ref _resetDragyRequested, 0) == 1;
+            bool doToggleBeep = Interlocked.Exchange(ref _toggleBeepRequested, 0) == 1;
+
+            if (doToggleBeep)
+            {
+                lock (_lock)
+                {
+                    _store.ShiftBeepEnabled = !_store.ShiftBeepEnabled;
+                    _snapshotStore.ShiftBeepEnabled = _store.ShiftBeepEnabled;
+                    _out.IsShiftBeepEnabled = _store.ShiftBeepEnabled;
+                    _isDataDirty = true;
+                }
+                TriggerAsyncSave();
+            }
+
+            if (doResetDragy)
+            {
+                lock (_lock)
+                {
+                    _globalEngine.Best0To100 = 0;
+                    _globalEngine.Best100To200 = 0;
+                    _globalEngine.Best0To200 = 0;
+                    _out.DragyLast0To100 = 0;
+                    _out.DragyBest0To100 = 0;
+                    _out.DragyLast100To200 = 0;
+                    _out.DragyBest100To200 = 0;
+                    _out.DragyLast0To200 = 0;
+                    _out.DragyBest0To200 = 0;
+                    _out.DragyStatus = "RESET";
+                    _isDataDirty = true;
+                }
+                TriggerAsyncSave();
+            }
 
             if (doResetAll) 
             { 
                 lock (_lock) 
                 { 
-                    _store = new CarStore { SchemaVersion = 2 }; 
-                    _snapshotStore = new CarStore { SchemaVersion = 2 };
+                    bool keepBeep = _store.ShiftBeepEnabled;
+                    double keepBuf = _store.ReactionBufferFactor;
+                    var keepNames = _store.CarNames;
+                    _store = new CarStore { SchemaVersion = 2, ShiftBeepEnabled = keepBeep, ReactionBufferFactor = keepBuf, CarNames = keepNames }; 
+                    _snapshotStore = CloneCarStore(_store);
                     _gearStates.Clear(); 
                     _globalEngine = new GlobalEngineProfile(); 
                     _isDataDirty = true; 
@@ -1451,6 +2263,12 @@ populateCarSelect();
                 TriggerAsyncSave();
             }
 
+            string activeGameName = pm.GameName ?? "";
+            bool isMotorsport = activeGameName.IndexOf("Motorsport", StringComparison.OrdinalIgnoreCase) >= 0 
+                             || activeGameName.IndexOf("FM", StringComparison.OrdinalIgnoreCase) >= 0;
+            string gamePrefix = isMotorsport ? "FM_" : "";
+            _out.ActiveGameMode = isMotorsport ? "FM" : "FH6";
+
             int currentOrdinal = (int)ReadDouble(pm, "DataCorePlugin.GameRawData.CarOrdinal");
             
             if (currentOrdinal <= 0) 
@@ -1471,6 +2289,12 @@ populateCarSelect();
 
             double now = _appTime.Elapsed.TotalSeconds;
 
+            if (now - _lastCarListCheckTime > 10.0)
+            {
+                _lastCarListCheckTime = now;
+                EnsureAndLoadCarList();
+            }
+
             int currentPI = (int)ReadDouble(pm, "DataCorePlugin.GameRawData.CarPerformanceIndex");
             if (currentPI <= 0) 
             { 
@@ -1481,8 +2305,9 @@ populateCarSelect();
             double engineIdleRpm = ReadDouble(pm, "DataCorePlugin.GameRawData.EngineIdleRpm");
             int dtType = (int)ReadDouble(pm, "DataCorePlugin.GameRawData.DrivetrainType");
             int roundedMaxRpm = (int)(Math.Round(engineMaxRpm / 100.0) * 100);
+            string expectedKey = $"{gamePrefix}{currentOrdinal}_PI{currentPI}_DT{dtType}_R{roundedMaxRpm}";
 
-            if (currentOrdinal != _lastCarOrdinal || currentPI != _lastCarPI || dtType != _lastCarDrivetrain || roundedMaxRpm != _lastCarEngineMaxRpmRounded) 
+            if (expectedKey != _key) 
             {
                 lock (_lock) 
                 { 
@@ -1499,27 +2324,30 @@ populateCarSelect();
                     _lastCarEngineMaxRpmRounded = roundedMaxRpm;
                     
                     string oldKey = $"{currentOrdinal}_PI{currentPI}";
-                    _key = $"{currentOrdinal}_PI{currentPI}_DT{dtType}_R{roundedMaxRpm}"; 
+                    _key = expectedKey; 
 
-                    bool hasOldData = _store.EngineProfiles.ContainsKey(oldKey) || _store.GearRatios.ContainsKey(oldKey) || _store.AdvancedGears.ContainsKey(oldKey);
-                    if (hasOldData && !_store.EngineProfiles.ContainsKey(_key) && !_store.GearRatios.ContainsKey(_key) && !_store.AdvancedGears.ContainsKey(_key))
+                    if (!isMotorsport)
                     {
-                        if (_store.EngineProfiles.TryGetValue(oldKey, out var oldEp)) {
-                            _store.EngineProfiles[_key] = oldEp;
-                            _store.EngineProfiles.Remove(oldKey);
-                            _snapshotStore.EngineProfiles.Remove(oldKey);
+                        bool hasOldData = _store.EngineProfiles.ContainsKey(oldKey) || _store.GearRatios.ContainsKey(oldKey) || _store.AdvancedGears.ContainsKey(oldKey);
+                        if (hasOldData && !_store.EngineProfiles.ContainsKey(_key) && !_store.GearRatios.ContainsKey(_key) && !_store.AdvancedGears.ContainsKey(_key))
+                        {
+                            if (_store.EngineProfiles.TryGetValue(oldKey, out var oldEp)) {
+                                _store.EngineProfiles[_key] = oldEp;
+                                _store.EngineProfiles.Remove(oldKey);
+                                _snapshotStore.EngineProfiles.Remove(oldKey);
+                            }
+                            if (_store.GearRatios.TryGetValue(oldKey, out var oldGr)) {
+                                _store.GearRatios[_key] = oldGr;
+                                _store.GearRatios.Remove(oldKey);
+                                _snapshotStore.GearRatios.Remove(oldKey);
+                            }
+                            if (_store.AdvancedGears.TryGetValue(oldKey, out var oldAg)) {
+                                _store.AdvancedGears[_key] = oldAg;
+                                _store.AdvancedGears.Remove(oldKey);
+                                _snapshotStore.AdvancedGears.Remove(oldKey);
+                            }
+                            _isDataDirty = true;
                         }
-                        if (_store.GearRatios.TryGetValue(oldKey, out var oldGr)) {
-                            _store.GearRatios[_key] = oldGr;
-                            _store.GearRatios.Remove(oldKey);
-                            _snapshotStore.GearRatios.Remove(oldKey);
-                        }
-                        if (_store.AdvancedGears.TryGetValue(oldKey, out var oldAg)) {
-                            _store.AdvancedGears[_key] = oldAg;
-                            _store.AdvancedGears.Remove(oldKey);
-                            _snapshotStore.AdvancedGears.Remove(oldKey);
-                        }
-                        _isDataDirty = true;
                     }
                     
                     _gearStates.Clear(); 
@@ -1542,6 +2370,13 @@ populateCarSelect();
                     _staticChassisDiveBase = 0.0;
                     _isChassisBaseInitialized = false;
                     _lastGear = 0; _peakRpmBeforeCut = 0; _currentRpmAccel = 0;
+                    _dragyArmedFromStop = false;
+                    _dragyRunningFromStop = false;
+                    _dragyRunning100To200 = false;
+                    _out.DragyLast0To100 = 0;
+                    _out.DragyLast100To200 = 0;
+                    _out.DragyLast0To200 = 0;
+                    _out.DragyStatus = "READY";
 
                     if (_store.EngineProfiles.TryGetValue(_key, out var savedEngine))
                     {
@@ -1555,6 +2390,9 @@ populateCarSelect();
                         _globalEngine.MaxPower = savedEngine.MaxPower; _globalEngine.RpmAtMaxPower = savedEngine.RpmAtMaxPower;
                         _globalEngine.MaxTorque = savedEngine.MaxTorque; _globalEngine.RpmAtMaxTorque = savedEngine.RpmAtMaxTorque;
                         _globalEngine.GhostLimiterRpm = savedEngine.GhostLimiterRpm;
+                        _globalEngine.Best0To100 = savedEngine.Best0To100;
+                        _globalEngine.Best100To200 = savedEngine.Best100To200;
+                        _globalEngine.Best0To200 = savedEngine.Best0To200;
 
                         _globalEngine.MinMappedBand = 400; _globalEngine.MaxMappedBand = 0;
                         for(int i=0; i<401; i++) {
@@ -1575,6 +2413,10 @@ populateCarSelect();
                             _isDataDirty = true;
                         }
                     }
+
+                    _out.DragyBest0To100 = _globalEngine.Best0To100;
+                    _out.DragyBest100To200 = _globalEngine.Best100To200;
+                    _out.DragyBest0To200 = _globalEngine.Best0To200;
 
                     if (_store.GearRatios.TryGetValue(_key, out var savedRatios))
                     {
@@ -1599,7 +2441,7 @@ populateCarSelect();
                                     double r2 = savedRatios[g2];
                                     if (r2 <= 0) continue;
                                     int diff = Math.Abs(g2 - g1);
-                                    double minStep = Math.Pow(1.035, diff);
+                                    double minStep = Math.Pow(1.018, diff);
                                     if (g1 < g2 && r1 <= r2 * minStep) violations++;
                                     else if (g1 > g2 && r1 * minStep >= r2) violations++;
                                 }
@@ -1694,6 +2536,11 @@ populateCarSelect();
 
             Drivetrain drivetrainType = (Drivetrain)dtType;
             double speedKmh = Math.Sqrt((velX * velX) + (velZ * velZ)) * 3.6;
+
+            lock (_lock)
+            {
+                UpdateDragyTimers(speedKmh, now, accel, brake, isGrounded, currentGear);
+            }
             
             double steer = ReadDouble(pm, "DataCorePlugin.GameRawData.Steer");
             double angularVelY = ReadDouble(pm, "DataCorePlugin.GameRawData.AngularVelocityY");
@@ -1707,7 +2554,7 @@ populateCarSelect();
                 _lastLearnedPower = 0;
                 _lastLearnedTime = -100;
                 _climbDownshiftActive = false;
-                UpdateOutputsAndState(currentGear, engineIdleRpm, engineMaxRpm, currentRpm, now, true, accel, velX, velZ, true, brake, steer, 0.0, 0.0, engineMaxRpm, susNormFL, susNormFR, susNormRL, susNormRR, combinedSlipRL, combinedSlipRR, 0.0, angularVelY, drivetrainType);
+                UpdateOutputsAndState(currentOrdinal, currentGear, engineIdleRpm, engineMaxRpm, currentRpm, now, true, accel, velX, velZ, true, brake, steer, 0.0, 0.0, engineMaxRpm, susNormFL, susNormFR, susNormRL, susNormRR, combinedSlipRL, combinedSlipRR, 0.0, angularVelY, drivetrainType);
                 return;
             }
 
@@ -1743,7 +2590,6 @@ populateCarSelect();
             double maxAllSlip = Math.Max(Math.Max(Math.Abs(slipRatioFL), Math.Abs(slipRatioFR)), Math.Max(Math.Abs(slipRatioRL), Math.Abs(slipRatioRR)));
             
             double avgWheelSpeed = 0;
-            bool isRatioLearnSafe = isGrounded && !isReboundDetected && (maxAllSlip < 0.08) && (brake < BrakeDeadzone);
 
             if (drivetrainType == Drivetrain.AWD) 
             {
@@ -1762,7 +2608,9 @@ populateCarSelect();
                 avgWheelSpeed = (Math.Abs(wheelSpeedRL) + Math.Abs(wheelSpeedRR)) / 2.0;
             }
 
-            double currentRatio = (isRatioLearnSafe && avgWheelSpeed > 16.0 && currentRpm > 1400.0) ? currentRpm / avgWheelSpeed : 0;
+            double ratioSlipLimit = (currentGear <= 2) ? 0.25 : 0.18;
+            bool isRatioLearnSafe = isGrounded && !isReboundDetected && (maxDrivenSlipRatio < ratioSlipLimit) && (maxDrivenSlipAngle < 0.20) && (brake < BrakeDeadzone);
+            double currentRatio = (isRatioLearnSafe && avgWheelSpeed > 8.0 && currentRpm > 1100.0) ? currentRpm / avgWheelSpeed : 0;
 
             double maxRearSlipAngle = Math.Max(Math.Abs(slipAngleRL), Math.Abs(slipAngleRR));
             double maxRearCombinedSlip = Math.Max(Math.Abs(combinedSlipRL), Math.Abs(combinedSlipRR));
@@ -1770,7 +2618,8 @@ populateCarSelect();
             
             if (speedKmh > 15.0)
             {
-                double angleScore = Math.Max(0, (maxRearSlipAngle - 0.08) / 0.45); 
+                double angleSpan = isMotorsport ? 0.36 : 0.45;
+                double angleScore = Math.Max(0, (maxRearSlipAngle - 0.08) / angleSpan); 
                 double slipScore = Math.Max(0, (maxRearCombinedSlip - 0.45) / 0.75); 
                 
                 currentOversteer = Math.Min(1.0, (angleScore * 0.65) + (slipScore * 0.35));
@@ -1840,10 +2689,13 @@ populateCarSelect();
                 _currentRpmAccel *= 0.8;
             }
 
+            double angleLimit = isMotorsport ? 0.22 : SlipAngleThreshold;
             bool isLowGear = currentGear >= 1 && currentGear <= 3;
-            double slipTolerance = isLowGear ? 0.60 : 0.38; 
+            double slipTolerance = isMotorsport
+                ? (isLowGear ? 0.45 : 0.28)
+                : (isLowGear ? 0.60 : 0.38); 
             
-            bool tractionOk = maxDrivenSlipRatio < slipTolerance && maxDrivenSlipAngle < SlipAngleThreshold;
+            bool tractionOk = maxDrivenSlipRatio < slipTolerance && maxDrivenSlipAngle < angleLimit;
 
             bool isLearnWot = accel >= LearnWotThreshold; 
             bool isDrivetrainEngaged = clutch < 2.0 && handbrake < 2.0;
@@ -2102,7 +2954,7 @@ populateCarSelect();
                     gs.RatioHistoryIdx = (gs.RatioHistoryIdx + 1) % 25;
                     if (gs.RatioSamples < 25) gs.RatioSamples++;
                     
-                    if (gs.RatioSamples >= 12)
+                    if (gs.RatioSamples >= 8)
                     {
                         int samplesToTake = gs.RatioSamples;
                         Array.Copy(gs.RatioHistory, _ratioScratch, samplesToTake);
@@ -2111,26 +2963,26 @@ populateCarSelect();
 
                         double p25 = _ratioScratch[samplesToTake / 4];
                         double p75 = _ratioScratch[(samplesToTake * 3) / 4];
-                        bool isTightCluster = median > 0 && ((p75 - p25) / median) < 0.012;
+                        bool isTightCluster = median > 0 && ((p75 - p25) / median) < 0.025;
 
                         if (isTightCluster)
                         {
                             if (gs.SavedRpmPerRadS > 0)
                             {
-                                if (Math.Abs(median - gs.SavedRpmPerRadS) / gs.SavedRpmPerRadS > 0.045)
+                                if (maxAllSlip < 0.05 && samplesToTake >= 15 && Math.Abs(median - gs.SavedRpmPerRadS) / gs.SavedRpmPerRadS > 0.085)
                                 {
                                     gs.RatioMismatchCount++;
                                     gs.RatioSamples = 0;
                                     gs.RatioHistoryIdx = 0;
                                     
                                     int badGears = 0;
-                                    foreach (var state in _gearStates.Values) if (state.RatioMismatchCount >= 2) badGears++;
+                                    foreach (var state in _gearStates.Values) if (state.RatioMismatchCount >= 3) badGears++;
 
-                                    if (badGears >= 2)
+                                    if (badGears >= 3)
                                     {
                                         Interlocked.Exchange(ref _resetRatiosRequested, 1);
                                     }
-                                    else if (gs.RatioMismatchCount >= 3)
+                                    else if (gs.RatioMismatchCount >= 5)
                                     {
                                         gs.SavedRpmPerRadS = 0;
                                         gs.RpmPerRadS = 0;
@@ -2146,10 +2998,10 @@ populateCarSelect();
                                         _mathNeedsEval = true;
                                     }
                                 }
-                                else
+                                else if (maxAllSlip < 0.06)
                                 {
                                     gs.RatioMismatchCount = 0;
-                                    gs.RpmPerRadS = (gs.SavedRpmPerRadS * 0.85) + (median * 0.15);
+                                    gs.RpmPerRadS = (gs.SavedRpmPerRadS * 0.90) + (median * 0.10);
                                     gs.SavedRpmPerRadS = gs.RpmPerRadS;
                                 }
                             }
@@ -2185,10 +3037,10 @@ populateCarSelect();
                 actualLimiter = _globalEngine.GhostLimiterRpm > 0 ? _globalEngine.GhostLimiterRpm : Math.Max(engineMaxRpm, _globalEngine.MaxMappedBand * 50.0);
             }
 
-            UpdateOutputsAndState(currentGear, engineIdleRpm, engineMaxRpm, currentRpm, now, isDrivetrainDecoupled, accel, velX, velZ, tractionOk, brake, steer, magnitudeG, maxDrivenSlipRatio, actualLimiter, susNormFL, susNormFR, susNormRL, susNormRR, combinedSlipRL, combinedSlipRR, currentOversteer, angularVelY, drivetrainType);
+            UpdateOutputsAndState(currentOrdinal, currentGear, engineIdleRpm, engineMaxRpm, currentRpm, now, isDrivetrainDecoupled, accel, velX, velZ, tractionOk, brake, steer, magnitudeG, maxDrivenSlipRatio, actualLimiter, susNormFL, susNormFR, susNormRL, susNormRR, combinedSlipRL, combinedSlipRR, currentOversteer, angularVelY, drivetrainType);
         }
 
-        private void UpdateOutputsAndState(int currentGear, double engineIdleRpm, double engineMaxRpm, double currentRpm, double now, bool isDrivetrainDecoupled, double accel, double velX, double velZ, bool tractionOk, double brake, double steer, double magnitudeG, double maxDrivenSlipRatio, double actualLimiter, double susNormFL, double susNormFR, double susNormRL, double susNormRR, double combinedSlipRL, double combinedSlipRR, double currentOversteer, double angularVelY, Drivetrain drivetrainType)
+        private void UpdateOutputsAndState(int currentOrdinal, int currentGear, double engineIdleRpm, double engineMaxRpm, double currentRpm, double now, bool isDrivetrainDecoupled, double accel, double velX, double velZ, bool tractionOk, double brake, double steer, double magnitudeG, double maxDrivenSlipRatio, double actualLimiter, double susNormFL, double susNormFR, double susNormRL, double susNormRR, double combinedSlipRL, double combinedSlipRR, double currentOversteer, double angularVelY, Drivetrain drivetrainType)
         {
             bool isLearned = false;
             double trigger = engineMaxRpm; 
@@ -2376,6 +3228,8 @@ populateCarSelect();
                 trigger = Math.Min(trigger, actualLimiter - 50.0);
 
                 _out.CarKey = _key;
+                _out.CarName = ResolveCarName(currentOrdinal, _key);
+                _out.IsShiftBeepEnabled = _store.ShiftBeepEnabled;
                 _out.IsTractionGood = tractionOk;
                 _out.RpmAtMaxPower = _globalEngine.RpmAtMaxPower;
                 _out.RpmAtMaxTorque = _globalEngine.RpmAtMaxTorque;
@@ -2554,6 +3408,17 @@ populateCarSelect();
                         _out.GearColor[i] = "#E74C3C"; 
                     }
                 }
+
+                if (currentGear >= 1 && currentGear <= 10)
+                {
+                    _out.CurrentGearStatusText = _out.GearText[currentGear];
+                    _out.CurrentGearColor = _out.GearColor[currentGear];
+                }
+                else
+                {
+                    _out.CurrentGearStatusText = "-";
+                    _out.CurrentGearColor = "#00000000";
+                }
             }
 
             double effectiveTarget = Math.Max(engineIdleRpm + 500.0, trigger);
@@ -2602,6 +3467,7 @@ populateCarSelect();
                 _currentLedStage = Math.Max(0, (int)Math.Floor(scaledLeds + 0.20));
             }
 
+            bool wasShiftLightActive = _shiftLightActive;
             if (!isDrivetrainDecoupled && currentRpm >= effectiveTarget && accel >= LightWotThreshold)
             {
                 _shiftLightActive = true;
@@ -2609,6 +3475,11 @@ populateCarSelect();
             if (_shiftLightActive && (isDrivetrainDecoupled || currentRpm < effectiveTarget - 200.0 || accel < LiftThreshold))
             {
                 _shiftLightActive = false;
+            }
+
+            if (_shiftLightActive && !wasShiftLightActive)
+            {
+                TriggerShiftBeepSound(now);
             }
 
             if (_shiftLightActive)
@@ -2646,10 +3517,16 @@ populateCarSelect();
         public double MaxTorque { get; set; } = 0; 
         public double RpmAtMaxTorque { get; set; } = 0; 
         public double GhostLimiterRpm { get; set; } = 0; 
+        public double Best0To100 { get; set; } = 0;
+        public double Best100To200 { get; set; } = 0;
+        public double Best0To200 { get; set; } = 0;
     }
     
     class CarStore {
         public int SchemaVersion { get; set; } = 2;
+        public bool ShiftBeepEnabled { get; set; } = false;
+        public double ReactionBufferFactor { get; set; } = 0.25;
+        public Dictionary<string, string> CarNames { get; set; } = new Dictionary<string, string>();
         public Dictionary<string, Dictionary<int, double>> GearRatios { get; set; } = new Dictionary<string, Dictionary<int, double>>(); 
         public Dictionary<string, SavedEngineProfile> EngineProfiles { get; set; } = new Dictionary<string, SavedEngineProfile>();
         public Dictionary<string, Dictionary<int, SavedGearData>> AdvancedGears { get; set; } = new Dictionary<string, Dictionary<int, SavedGearData>>();
