@@ -1,4 +1,4 @@
-# 🏎️ FH6SmartShift (v1.1.0) — Virtual Dyno, Dragy Timer & Shift Telemetry System for Forza Horizon 6 & Forza Motorsport
+# 🏎️ FH6SmartShift (v1.1.1) — Virtual Dyno, Dragy Timer & Shift Telemetry System for Forza Horizon 6 & Forza Motorsport
 
 [![Platform](https://img.shields.io/badge/Platform-SimHub-blue.svg)](https://www.simhubdash.com/)
 [![Games](https://img.shields.io/badge/Games-Forza%20Horizon%206%20%7C%20Forza%20Motorsport-orange.svg)](#)
@@ -8,7 +8,7 @@
 [![Buy Me A Coffee](https://img.shields.io/badge/Buy%20Me%20a%20Coffee-ffdd00?logo=buy-me-a-coffee&logoColor=black)](https://buymeacoffee.com/mtowarek01d)
 
 **Author:** mtowarek01  
-**Version:** v1.1.0 (Dual-Game FH6 & Forza Motorsport Engine, Virtual Dyno, Dragy Timer, F1 Shift Beep, Tuning Advisor & WPF UI)
+**Version:** v1.1.1 (Dual-Game FH6 & Forza Motorsport Engine, 100% Dyno Map Gate, Dragy Timer, F1 Shift Beep, Tuning Advisor & WPF UI)
 
 ---
 
@@ -18,43 +18,94 @@
 
 Unlike basic scripts that only average rev-limiter bounce RPM, **FH6SmartShift** constructs a live **401-band Virtual Dyno** (`50 RPM` resolution up to `20,000 RPM`). By capturing raw UDP telemetry from the game — including engine power (`Power`), torque (`Torque`), boost pressure (`Boost`), wheel rotation speeds (`WheelRotationSpeed`), longitudinal and lateral tire slip (`TireSlipRatio`, `TireSlipAngle`), and suspension travel — the plugin autonomously learns transmission gear ratios and calculates the exact mathematical power curve intersection point between consecutive gears (Gears 1–10).
 
-In **v1.1.0**, the project expands into a complete dual-game race-engineering suite featuring automatic **Forza Horizon 6 / Forza Motorsport detection**, a **Built-In "Dragy" Acceleration Timer** (`0–100 km/h`, `100–200 km/h`, `0–200 km/h`), an **F1 / GT3 Audio Shift Beep**, **Custom Car & Build Naming** (`✏️ Name Car` / `FH6SmartShift_CarList.json`), **Active Gear Color/Status Delegates** (`CurrentGearColor`, `CurrentGearStatusText`), a **Native SimHub WPF Settings Control Center**, an **Automated Gearbox Tuning Advisor**, and **Single-Car Profile Export/Merge** inside the interactive HTML Garage Inspector (`FH6SmartShift_GarageReport.html`).
+---
+
+## 🎯 Best Practice: How to Calibrate the Engine Map (100% Dyno) & Gears
+
+To get a **100% repeatable Virtual Dyno curve**, accurate peak torque readings, and verified **Gearbox Tuning Advisor** recommendations, follow this 2-step calibration method on a flat straight:
+
+### Why a Standing 0–200 km/h Launch Is Not Enough for the Dyno Map
+During a hard standing launch (`0–200 km/h`), **1st gear** typically experiences heavy wheelspin (which the plugin's traction gate filters out to protect your data), and upshifts into **Gears 2–6** land high in the rev range (typically above `4,800–5,500 RPM`). As a result, the entire mid-range (`2,500–4,800 RPM` — where peak torque usually lives) is skipped, leaving the dyno map around `55–65%` complete.
+
+### ✅ Step 1: The 3rd or 4th Gear Dyno Pull (2,500 RPM to Limiter)
+1. Shift into **3rd or 4th gear** while cruising at low RPM (**below `2,500 RPM`**).
+2. Press and hold **100% Wide-Open Throttle (WOT)** cleanly all the way to the **rev limiter**.
+3. **Why this works best:** A higher gear loads the engine smoothly without wheelspin, gives turbochargers time to reach 100% boost pressure before hitting the mid-range, and sweeps every single `50 RPM` band from `2,500 RPM` to redline in one continuous pass.
+4. Watch the dashboard badge switch to **`DYNO OK 100%`**. Reaching `100%` automatically unlocks the verified **Virtual Dyno Curve** and **Automated Gearbox Tuning Advisor** inside `FH6SmartShift_GarageReport.html`.
+
+### ✅ Step 2: Lock All Gear Ratios (Gears 1–10)
+1. Accelerate cleanly through each gear (**Gear 1 up to your top gear**) for at least `0.35 s` per gear without spinning the tires.
+2. As each gear ratio locks, its slot in the dashboard matrix turns **Blue `(R)`**.
+3. Once the next gear (`N+1`) is locked and the dyno map is populated, the plugin automatically calculates the power curve intersection and turns each gear **Green `(P)`** (Mathematical Peak Shift) or **Green `(L)`** (Rev-Limiter Optimal Shift).
 
 ---
 
-## 🆕 What's New in v1.1.0
+## 🧱 Core Features (v1.0 Foundation — Built-In Telemetry Systems)
 
-1. **🏁 Dual-Game Engine (*Forza Horizon 6* & *Forza Motorsport*):** Automatically detects the active game in SimHub (`[FH6SmartShift.ActiveGameMode]`). Prefixes *Forza Motorsport* vehicle keys with `FM_` to keep Horizon (`[FH]`) and Motorsport (`[FM]`) databases cleanly separated, while automatically tightening tire slip filters for track racing in *Forza Motorsport*.
-2. **🎯 Active Gear Delegates (`CurrentGearColor` & `CurrentGearStatusText`):** Directly exposes the learning status label and Hex color code of the currently engaged gear (`1–10`) so you can bind a dynamic border, frame, or background box without nested NCalc `if()` statements.
-3. **🏷️ Custom Car & Build Naming (`✏️ Name Car` & `FH6SmartShift_CarList.json`):** Because raw UDP telemetry only provides a numeric `CarOrdinal` ID, you can assign custom names to specific cars or individual tuning setups directly in the HTML Garage Report (`✏️ Name Car`) and save them to `FH6SmartShift_CarList.json`. Exposed in SimHub via `[FH6SmartShift.CurrentCarName]`.
-4. **🔊 F1 / GT3 Audio Shift Beep (`ToggleShiftBeep`):** Optional background audio cue (`2650 Hz`, `60 ms`) triggered the exact instant all 12 LEDs lock at `ShiftLightFlash` (`0.40 s` cooldown, zero frame-time impact).
-5. **⏱️ Built-In "Dragy" Performance Timer:** Sub-frame linearly interpolated acceleration timer measuring **`0–100 km/h`**, **`100–200 km/h`** (standing or rolling), and **`0–200 km/h`**, automatically saving Personal Best (PB) records per car/tune in the JSON database.
-6. **🔧 Automated Gearbox Tuning Advisor:** Embedded in `FH6SmartShift_GarageReport.html`, automatically analyzing each gear transition (`N -> N+1`) against `RpmAtMaxTorque`, `RpmAtMaxPower`, and `BoostMap` to flag overly wide ratios, turbo lag drops (`< 72%` peak boost), or overly tight low-gear steps.
-7. **🖥️ Native SimHub WPF Control Center (`IWPFSettings`):** Dedicated SimHub settings panel with live telemetry/Dragy status, an interactive **Driver Reaction-Time Lead Buffer Slider (`0.10 s – 0.40 s`)**, Audio Shift Beep checkbox, and one-click memory/report actions.
-8. **🌐 Single-Car Export & Database Merge:** Export individual calibrated cars (`📤 Export Car`) to share with the community or merge external `.json` profiles (`📥 Import / Merge JSON`) directly inside the HTML Garage Inspector.
-9. **⚡ Smooth 12-LED Shift Engine, Multi-Warning Pill & 3-Color Slide Recovery System:** Sequential 12-LED bar (`LedActiveCount` `1..12`) with step hysteresis, a multi-function warning indicator (`SLIP` / `OVRST!` / `BOTTOM!`), and a real-time slip-derivative bar (`SlideSeverity`, `SlideBarColor`, `SlideStateText`) indicating whether a slide is **Deepening** (🔴 Red), **Holding** (🟠 Orange), or **Recovering** (🟢 Green).
+These foundational systems form the core physics and mathematical engine of **FH6SmartShift**:
+
+1. **📊 401-Band Live Virtual Dyno (`PowerMap`, `TorqueMap`, `BoostMap`):**
+   * Samples engine output at 60 Hz across 401 discrete `50 RPM` bands (from `0` to `20,000 RPM`) during Wide-Open Throttle (`Accel >= 240`, `> 5000 W`).
+   * Uses asymmetric Exponential Moving Average (EMA) filtering to reject transient dips while capturing true peak output, accompanied by a live 20-block coverage indicator (`MapCoverageBar` `[████████░░░░░░░░░░░░]`) and percentage readout (`LiveMappingProgress`).
+2. **🧮 Mathematical Power Curve Intersection Engine (Gears 1–10):**
+   * Evaluates every gear transition (`N -> N+1`) by comparing smoothed power in the current gear (`pNow`) against landing power in the next gear (`pNext` at `r * dropRatio`).
+   * **Turbo Boost-Drop Compensation:** Penalizes `pNext` by `0.85` if upshifting drops boost pressure below `70%` of current boost, preventing premature shifts into turbo lag.
+   * Automatically classifies each gear in real time: Red `(-)` (Unmapped), Blue `(R)` (Ratio Locked), Orange `(L?)` (Provisional Ceiling), Yellow `(P?)` (Unconfirmed Peak), Green `(P)` (Confirmed Mathematical Peak Intersection), or Green `(L)` (Confirmed Limiter Optimal).
+3. **⚙️ Autonomous Gear Ratio Learning & Auto-Reset on Re-Tuning:**
+   * Computes mechanical ratios (`CurrentEngineRpm / avgWheelSpeed`) for AWD, RWD, and FWD drivetrains using a 25-sample circular buffer and interquartile range (IQR) cluster filtering.
+   * Enforces global ratio monotonicity across Gears 1–10 and automatically detects when you change transmission sliders in the tuning menu (`RatioMismatchCount`), resetting stale ratios without wiping your engine dyno map.
+4. **👻 Hidden Rev Limiter ("Ghost Limiter") Detection & Auto-Unlock:**
+   * Many upgraded or engine-swapped cars in Forza cut fuel/ignition hundreds of RPM before the visual gauge `EngineMaxRpm`.
+   * The plugin detects power cuts (`powerRatio < 0.85`), sudden RPM deceleration (`< -150 RPM/s`), or RPM walls near the ceiling, locks `GhostLimiterRpm` after 2 confirmed hits, and purges contaminated upper bands (`CleanUpContaminatedBands`).
+   * If you later upgrade cams/valves and rev past `GhostLimiterRpm + 150 RPM` for `0.10 s`, it automatically breaks and unlocks the old ceiling (`GhostLimiterBreakAccumulator`).
+5. **⚡ Dynamic Driver Reaction-Time Lead Buffer:**
+   * Tracks real-time engine RPM acceleration (`_currentRpmAccel` in `RPM/s`) and triggers the shift light bar *ahead* of the physical target (`ShiftTriggerRpm = realShiftRpm - liveBuffer`, scaled up to `1500 RPM` in Gears 1–2 and `600 RPM` in Gears 3+) so your physical reaction time lands right on the optimal shift point without hitting the limiter.
+6. **🔽 Smart Downshift & Hill-Climb Assistant (`IsDownshiftSafe` & `IsDownshiftSuggested`):**
+   * **Braking & Chassis Dive Compensation:** Calculates safe downshift thresholds (`93%` landing multiplier, `88%` max cap) and dynamically raises `DownshiftTriggerRpm` under braking (up to `+600 RPM`) and dynamic front-axle dive (`DbgChassisDive`, up to `+250 RPM` relative to a self-calibrating static sag baseline `_staticChassisDiveBase`).
+   * **Hill-Climb / Load Downshift Prompt (`_climbDownshiftActive`):** Suggests a downshift at WOT when vehicle acceleration stagnates (`_speedTrendKmhPerS <= +1.0 km/h/s`) and the lower gear provides at least **`+5%` more wheel power** (`pLand > pNow * 1.05`) with safe RPM headroom.
+7. **🛡️ 7-Layer Physics & Surface Contamination Filter (`filtersOk`):**
+   * Automatically pauses dyno sampling during wheelspin (`tractionOk`), airborne wheels (`NormalizedSuspensionTravel <= 0.02`), puddles (`WheelInPuddleDepth > 0.01`), rumble strips/kerbs (`SurfaceRumble > 0`), rear suspension rebound spikes (`|ΔSuspensionTravelMetersRear| > 0.08 m`), vehicle damage (`Damage1/2 > 0.05`), clutch/handbrake engagement, and post-shift settle windows (`0.25 s` upshift, `0.45 s` downshift, `0.15 s` clutch).
+8. **🏎️ Chassis, Suspension & Traction Warnings:**
+   * **Grip Loss (`IsGripLost`):** Triggers above `1.25 G` combined acceleration or `> 0.30` driven wheel slip.
+   * **Power Oversteer (`PowerOversteerWarning` & `OversteerSeverity`):** Alerts RWD/AWD drivers when rear combined tire slip exceeds `0.60` under throttle (`0.0–1.0` severity scale).
+   * **High-Speed Aero Bottoming (`AeroBottomingWarning`):** Triggers when any damper hits `>= 98%` compression above `200 km/h`, helping tuners dial in ride height and spring stiffness.
+   * **Body Slip Angle (`BodySlipAngle`) & Top Gear Detection (`IsTopGear`):** Real-time chassis drift angle in degrees and automatic top/overdrive gear identification.
+9. **💾 Per-Build Profile Persistence, Legacy Migration & Daily Backups:**
+   * Stores independent profiles keyed by `{Ordinal}_PI{PI}_DT{DT}_R{Rpm}` (so an A800 RWD build and an S1-900 AWD build of the same car never overwrite each other).
+   * Uses lock-cloned asynchronous background saving (`Task.Run`) for zero frame stutter and maintains **3 rolling daily backups** (`.bak_yyyyMMdd`) in `PluginsData\Common\`.
 
 ---
 
-## ⚙️ Architecture & Actual Operating Logic
+## 🆕 What's New in v1.1.0 & v1.1.1 (Latest Expansion)
 
-* **401-Band Virtual Dyno (`PowerMap`, `TorqueMap`, `BoostMap`):** Sampling takes place near wide-open throttle (`Accel >= 240` on a `0–255` scale, i.e., **~94% throttle**), at power levels above `5000 W`, after at least 2 consecutive clean WOT frames (`_cleanWotFrames >= 2`). The range up to `20,000 RPM` is divided into 401 bands in `50 RPM` increments, updated with an asymmetric EMA filter (`alpha = 0.35` for higher power readings, `0.08` for lower readings) and protected by automatic 1–2 band pocket healing (`HealEngineMapPockets`).
-* **Power Curve Intersection Algorithm (`EvaluateAllMathIntersections`):** Every `0.15 s` (when data has changed), the algorithm compares smoothed engine power in the current gear (`pNow` at `r` RPM) against power after upshifting to the next gear (`pNext` at landing RPM `r * dropRatio`). If the engine is turbocharged (`Boost > 0.1`) and expected boost at landing RPM drops below `70%` of current boost, `pNext` is penalized by a `0.85` multiplier. A shift point is confirmed as mathematically optimal `(P)` when, for `r >= RpmAtMaxPower`, the condition **`pNext >= pNow * 1.015`** (1.5% wheel-power advantage) is met across **5 consecutive 25 RPM steps** (or 2 steps near the mapped ceiling), and sample density in the active gear landing zone is at least **78%**.
-* **Fast & Bulletproof Gear Ratio Learning (`RpmPerRadS`):** The `CurrentEngineRpm / avgWheelSpeed` ratio is recorded when `Accel >= 75.0`, with all wheels grounded, no suspension rebound spike, no braking (`Brake < 5.0`), slip across all wheels `< 0.08`, wheel speed `> 16 rad/s`, and engine speed `> 1400 RPM`. Samples are stored in a 25-element circular buffer. **Median calculation and ratio confirmation occur once 12 samples are collected (~0.18 s) with an interquartile spread `(p75 - p25) / median < 1.2%`**. The system enforces global ratio monotonicity (`IsRatioMonotonicAcrossAllGears`, requiring a minimum `3.5%` step per gear across all known gears `1..10`) and automatically resets transmission ratios upon detecting a tuning change.
-* **Hidden Limiter Detection (`GhostLimiterRpm`):** Detects power cuts (`powerRatio < 0.85`, RPM drop `_currentRpmAccel < -150 RPM/s`, or an RPM wall `|_currentRpmAccel| < 60 RPM/s` near the mapped ceiling for `0.05 s`) occurring before nominal `EngineMaxRpm`. After hitting the same band twice (`±150 RPM`), the plugin locks `GhostLimiterRpm` and purges contaminated bands (`CleanUpContaminatedBands`). Automatically unlocks if the engine later revs past `GhostLimiterRpm + 150 RPM` for `0.10 s`.
-* **Multi-Layer Physics Filters (`filtersOk`):** Dyno learning is paused whenever any of the following conditions occur:
-  1. Any wheel leaves the ground (`NormalizedSuspensionTravel <= 0.02`).
-  2. Driving into a puddle (`WheelInPuddleDepth > 0.01` on any wheel).
-  3. Vehicle damage (`Damage1 > 0.05` or `Damage2 > 0.05`).
-  4. Sudden **rear** suspension rebound (`|ΔSuspensionTravelMetersRear| > 0.08 m` between frames for RL or RR).
-  5. Surface vibration (`SurfaceRumble > 0` on any wheel).
-  6. Clutch or handbrake engagement (`Clutch >= 2.0` or `HandBrake >= 2.0`), or post-shift stabilization cooldown (`0.25 s` upshift, `0.45 s` downshift, `0.12 s` clutch).
-  7. Exceeding the `tractionOk` threshold:
-     * **Forza Horizon 6 (`FH6`):** driven wheel longitudinal slip `>= 0.60` (gears 1–3) or `>= 0.38` (gears 4+), or slip angle `>= 0.25 rad`.
-     * **Forza Motorsport (`FM`):** driven wheel longitudinal slip `>= 0.42` (gears 1–3) or `>= 0.26` (gears 4+), or slip angle `>= 0.18 rad`.
-* **Downshift & Hill-Climb Assistant (`Downshift` & `_climbDownshiftActive`):** The safe downshift threshold (`DownshiftTriggerRpm`) is raised proportionally to braking force (up to `+600 RPM`) and dynamic front-axle dive (`DbgChassisDive`, up to `+250 RPM`), capped by a hard ceiling of `(actualLimiter - 150) * dropFromPrev`. An independent `_climbDownshiftActive` algorithm suggests a downshift under load when `Accel >= 225`, speed trend is `<= +1.0 km/h/s`, power in the lower gear is higher by at least **5%** (`pLand > pNow * 1.05`), post-downshift RPM is at least `300 RPM` below the lower gear's shift point, and driven wheel slip is `< 0.15`.
-* **Sub-Frame "Dragy" Performance Timer (`UpdateDragyTimers`):** Uses linear interpolation between 60 Hz UDP frames (`frac = (targetSpeed - prevSpeed) / (currentSpeed - prevSpeed)`) to measure `0–100 km/h` (armed below `1.5 km/h`), `100–200 km/h` (triggered automatically upon crossing `100.0 km/h` under throttle), and `0–200 km/h`.
-* **Zero-Stutter Persistence & HTML Report Generation:** Disk saving takes place asynchronously every `15 s` minimum (when data has changed): the plugin performs a deep copy of all car dictionaries (`CloneCarStore`) inside a `lock` statement and offloads both JSON serialization and `FH6SmartShift_GarageReport.html` generation to a background `Task.Run` thread.
+Building on the v1.0 foundation, versions **v1.1.0** and **v1.1.1** introduce:
+
+1. **🏁 Dual-Game Engine (*Forza Horizon 6* & *Forza Motorsport*):**
+   * Automatically detects the active game in SimHub (`[FH6SmartShift.ActiveGameMode]` returns `"FH6"` or `"FM"`).
+   * Prefixes *Forza Motorsport* vehicle keys with `FM_` to keep Horizon (`[FH]`) and Motorsport (`[FM]`) databases cleanly separated, while tightening tire slip gates for track racing in *Forza Motorsport*.
+2. **🔒 100% Dyno Map Verification Gate & Turbo Spool Filter (v1.1.1):**
+   * Tracks full-range mapping progress from `~2,500–3,000 RPM` (`min(3000, 0.45 * RpmAtMaxPower)`) to `actualLimiter - 250 RPM`.
+   * Locks the HTML Virtual Dyno chart and Gearbox Tuning Advisor until the map reaches **100% completion** (with a `👁️ Toggle Partial Curve` button for live diagnostics), eliminating fake straight-line bridging across unmapped mid-range RPM bands.
+   * **Turbo Spool-Up Protection (`MaxBoost`):** Rejects low-boost transient samples above `2,800 RPM` (`< 78%` peak boost) when a turbocharger is still spooling up after a gear shift, preventing jagged torque spikes, and automatically heals 1–2 band pockets (`HealEngineMapPockets`).
+3. **🛡️ Self-Healing Gear Ratio Progression (v1.1.1):**
+   * Enforces a `0.35 s` post-upshift stabilization window and a `1.2%` interquartile spread (`10+` samples) before locking gear ratios.
+   * **Instant Upward Self-Correction:** Since wheelspin during acceleration always inflates wheel speed and *underestimates* `RpmPerRadS`, if the plugin later observes a higher mechanical ratio (`> +2.5%`) under full grip (`< 4%` slip), it immediately overwrites the slip-contaminated value.
+   * **Geometric Progression Sanitizer (`SanitizeGearProgression`):** Automatically detects and purges any middle gear whose recorded ratio creates an impossible deep drop (`< 0.635`) followed by an abnormally flat step (`> 0.875`).
+4. **📊 Interactive HTML Garage Inspector & Automated Gearbox Tuning Advisor (`FH6SmartShift_GarageReport.html`):**
+   * Auto-generated browser application displaying peak HP/kW, peak Torque (Nm), peak Boost (psi/bar), `GhostLimiterRpm`, a full Gears 1–10 ratio/drop/landing table, a 401-band canvas dyno chart, and automated gearbox slider recommendations.
+5. **⏱️ Built-In Sub-Frame "Dragy" Performance Timer:**
+   * Linearly interpolated acceleration timer measuring **`0–100 km/h`**, **`100–200 km/h`** (standing or rolling), and **`0–200 km/h`**, automatically saving Personal Best (PB) records per car/tune in the JSON database.
+6. **🔊 F1 / GT3 Audio Shift Beep (`ToggleShiftBeep` — Off by Default):**
+   * Optional background audio cue (`2650 Hz`, `60 ms`) triggered the exact instant all 12 LEDs lock at `ShiftLightFlash` (`0.40 s` cooldown, zero frame-time impact). Disabled by default; enable anytime in the SimHub WPF Settings tab or via action `FH6SmartShift.ToggleShiftBeep`.
+7. **🏷️ Custom Car & Build Naming (`✏️ Name Car` & `FH6SmartShift_CarList.json`):**
+   * Assign custom names to specific `CarOrdinal` IDs or individual tuning setups directly in the HTML Garage Report (`✏️ Name Car`) and save them to `FH6SmartShift_CarList.json`. Exposed live in SimHub via `[FH6SmartShift.CurrentCarName]`.
+8. **🌐 Single-Car Export & Database Merge:**
+   * Export individual calibrated cars (`📤 Export Car`) to share with the community or merge external `.json` profiles (`📥 Import / Merge JSON`) directly inside the HTML Garage Inspector.
+9. **🖥️ Native SimHub WPF Control Center (`IWPFSettings`):**
+   * Dedicated SimHub settings panel with live telemetry/Dragy status, an interactive **Driver Reaction-Time Lead Buffer Slider (`0.10 s – 0.40 s`)**, Audio Shift Beep checkbox, and one-click memory/report actions.
+10. **🎯 Active Gear Delegates, Smooth 12-LED Engine & 3-Color Slide Recovery Bar:**
+    * Added `[FH6SmartShift.CurrentGearColor]` and `[FH6SmartShift.CurrentGearStatusText]` for single-box active gear borders/backgrounds.
+    * Added sequential 12-LED staging (`LedActiveCount` `1..12`), Multi-Warning Pill (`SLIP` / `OVRST!` / `BOTTOM!`), and a 3-color slip-derivative recovery bar (`SlideSeverity`, `SlideTrend`, `SlideStateText`, `SlideBarColor`: Red `▲ DEEPENING`, Orange `● HOLDING`, Green `◄ RECOVERING`).
 
 ---
 
@@ -66,11 +117,11 @@ Every time the plugin saves telemetry data (or when you click **Open Virtual Dyn
 ### Key Features of the Garage Inspector:
 1. **Vehicle Selector & Custom Car Naming (`✏️ Name Car` & `💾 CarList.json`):** Switch between all saved cars/tunes on the dropdown list (prefixed with `[FH]` or `[FM]` and formatted by default as `Car #Ordinal | PI | Drivetrain | Gauge RPM`). Click **`✏️ Name Car`** to assign your own custom name to a specific car or build, and click **`💾 CarList.json`** to save your custom dictionary to `PluginsData\Common\`.
 2. **Profile Sharing (`📤 Export Car` & `📥 Import / Merge JSON`):** Export any single car profile (`FH6_CarProfile_<Key>.json`) to share with friends, or import/merge external profiles and download the combined database (`💾 Save Merged DB`).
-3. **One-Click Engine & Dyno Summary Banner:** Displays peak power (HP & kW), peak torque (Nm), max boost pressure (psi & bar), and detected `GhostLimiterRpm` with a **`📋 Copy Summary`** button:
-   > *Example:* `Engine & Dyno Profile — [FH] Car #4122 (4122_PI700_DT2_R8000): Peak power of 675.0 HP (503.3 kW) at 7100 RPM, peak torque of 734.8 Nm at 6300 RPM, 41.03 psi (~2.83 bar) of boost, and a detected hidden rev limiter (GhostLimiterRpm) at 7600.7 RPM (on an 8000 RPM gauge cluster).`
+3. **One-Click Engine & Dyno Summary Banner (with Map Completion Badge):** Displays `[DYNO MAP: 100% COMPLETE]` (or current percentage), peak power (HP & kW), peak torque (Nm), max boost pressure (psi & bar), and detected `GhostLimiterRpm` with a **`📋 Copy Summary`** button:
+   > *Example:* `Engine & Dyno Profile — [FH] AWD 10-Speed Twin-Turbo (#4122) (4122_PI800_DT2_R8000) [DYNO MAP: 100% COMPLETE]: Peak power of 848.1 HP (632.5 kW) at 6750 RPM, peak torque of 961.8 Nm at 3250 RPM, 38.66 psi (~2.67 bar) of boost, and a detected hidden rev limiter (GhostLimiterRpm) at 7769.8 RPM (on an 8000 RPM gauge cluster).`
 4. **Dragy Performance Records Cards:** Displays saved Personal Best times for **`0–100 km/h`**, **`100–200 km/h`**, and **`0–200 km/h`**.
-5. **Complete Gears 1–10 Shift Table & Automated Gearbox Tuning Advisor:** Displays each gear's ratio (`RpmPerRadS`), percentage RPM drop (`dropRatio`), next gear landing RPM (`~RPM`), saved JSON threshold, physical shift target (`OptimalShiftRpm`), status badge, and automated ratio tuning recommendations beneath the table.
-6. **Interactive 401-Band Dyno Chart:** Plots smoothed **Engine Power (HP, Green)** and **Engine Torque (Nm, Blue)** across the RPM range.
+5. **Complete Gears 1–10 Shift Table & 100%-Gated Gearbox Tuning Advisor:** Displays each gear's ratio (`RpmPerRadS`), percentage RPM drop (`dropRatio`), next gear landing RPM (`~RPM`), saved JSON threshold, physical shift target (`OptimalShiftRpm`), status badge, and automated ratio tuning recommendations beneath the table (unlocked once the dyno map reaches 100%).
+6. **100%-Gated 401-Band Dyno Chart:** Plots smoothed **Engine Power (HP, Green)** and **Engine Torque (Nm, Blue)** across the RPM range without artificial straight-line bridging across unmapped gaps. Includes a `👁️ Toggle Partial Curve` button if you want to inspect an incomplete curve before reaching 100%.
 
 ---
 
@@ -93,7 +144,7 @@ The repository includes both **Classic** and **Optimal MoTeC-Style** dashboard l
 
 ![FH6SmartShift Optimal Layout v1.1](./FH6SmartShift_Optimal_Layout_v1.1.jpg)
 
-The updated layout refines visual hierarchy and exposes the new v1.1.0 telemetry properties:
+The updated layout refines visual hierarchy and exposes the v1.1.1 telemetry properties:
 
 1. **Smooth 12-LED Bar (Zero Skipping):** Bound to `[FH6SmartShift.LedActiveCount]` (`1..12`) and `[FH6SmartShift.ShiftLightFlash]`. Lights up all 12 LEDs sequentially (Green 1–4, Yellow 5–8, Red 9–11, Blue/Red 12) with step hysteresis and WOT anti-flicker protection.
 2. **Compact Dyno Status Pill & Small Clock (`DYNO OK 100%` + `18:33`):** Combines `[FH6SmartShift.EngineMapStatus]` and `[FH6SmartShift.LiveMappingProgress]` into a status badge alongside a compact system clock.
@@ -113,7 +164,7 @@ The updated layout refines visual hierarchy and exposes the new v1.1.0 telemetry
 | **`N: (L)`** | 🟢 Green | `#4CAF50` | **Limiter Confirmed (`IsConfirmed && !IsMathOptimal`):** Confirmed optimal shift right at the true/ghost rev limiter (no intersection before cutoff, or top gear confirmed). |
 | **`N: (L?)`** | 🟠 Orange | `#F39C12` | **Edge / Unconfirmed Limit (`TriggerIsEdge`):** Provisional trigger near the mapped ceiling while the engine map is still being populated. |
 | **`N: (P?)`** | 🟡 Yellow | `#F1C40F` | **Unconfirmed Trigger (`PowerPeakCaught && ShiftTriggerRpm > 0`):** Gear has a saved threshold, awaiting full confirmation. |
-| **`N: (R)`** | 🔵 Blue | `#3498DB` | **Ratio Locked (`RpmPerRadS > 0`):** Gear ratio learned (`>= 12` tight-cluster IQR samples), waiting for gear `N+1` ratio or WOT pull to limiter. |
+| **`N: (R)`** | 🔵 Blue | `#3498DB` | **Ratio Locked (`RpmPerRadS > 0`):** Gear ratio learned (`>= 10` tight-cluster IQR samples), waiting for gear `N+1` ratio or WOT pull to limiter. |
 | **`N: (-)`** | 🔴 Red | `#E74C3C` | **Unmapped / Paused:** Gear has no learned ratio yet, memory was reset, or game is paused/in menu (`IsRaceOn == 0`). |
 
 ---
@@ -121,7 +172,7 @@ The updated layout refines visual hierarchy and exposes the new v1.1.0 telemetry
 ## 📂 Repository Contents & File Paths
 
 ```text
-├── FH6SmartShift.cs                       # Full C# source code of the plugin (v1.1.0 - FH6 & FM)
+├── FH6SmartShift.cs                       # Full C# source code of the plugin (v1.1.1 - FH6 & FM)
 ├── FH6SmartShift.csproj                   # .NET Framework 4.8 (C# 7.3 + WPF) project file
 ├── FH6SmartShift.dll                      # Compiled library ready to drop into SimHub
 ├── FH6SmartShift_GarageReport.html        # Interactive Virtual Dyno, Dragy & Tuning Inspector
@@ -129,5 +180,5 @@ The updated layout refines visual hierarchy and exposes the new v1.1.0 telemetry
 ├── FH6SmartShift_Optimal_Layout_v1.1.jpg  # Annotated v1.1 MoTeC-style dashboard layout
 ├── DashTemplates.zip                      # Classic SimHub dashboards (KM/H & MPH)
 ├── FH6SmartShift_Optimal.zip              # Optimal v1.1 MoTeC-style SimHub dashboard (1334x513)
-├── README.md                              # Online repository documentation (v1.1.0)
+├── README.md                              # Online repository documentation (v1.1.1)
 └── README.pdf                             # Printable user manual & technical reference
