@@ -16,7 +16,7 @@ using SimHub.Plugins;
 namespace FH6SmartShift
 {
     [PluginName("FH6SmartShift")]
-    [PluginDescription("The Architect's Masterpiece - v1.1.0 (FH6 & Forza Motorsport Virtual Dyno, Dragy, Tuning Advisor & WPF UI)")]
+    [PluginDescription("The Architect's Masterpiece - v1.1.1 (FH6 & Forza Motorsport Virtual Dyno, 100% Map Gate, Dragy & Tuning Advisor)")]
     [PluginAuthor("mtowarek01")]
     public class FH6SmartShift : IPlugin, IDataPlugin, IWPFSettings
     {
@@ -24,7 +24,8 @@ namespace FH6SmartShift
 
         private const double DownshiftCooldownSeconds = 0.45; 
         private const double UpshiftCooldownSeconds = 0.25; 
-        private const double ClutchSettleSeconds = 0.12; 
+        private const double RatioLearnShiftSettleSeconds = 0.35;
+        private const double ClutchSettleSeconds = 0.15; 
         private const double SaveIntervalSeconds = 15.0; 
         private const double MathEvalIntervalSeconds = 0.15; 
 
@@ -32,7 +33,7 @@ namespace FH6SmartShift
         private const double MaxAllowedDownshiftMultiplier = 0.88; 
         
         private const double LearnWotThreshold = 240.0;
-        private const double RatioLearnAccelThreshold = 20.0;
+        private const double RatioLearnAccelThreshold = 25.0;
         private const double LightWotThreshold = 225.0;
         private const double LiftThreshold = 205.0;
         private const double BrakeDeadzone = 5.0;
@@ -65,6 +66,7 @@ namespace FH6SmartShift
             public double RpmAtMaxPower = 0;
             public double MaxTorque = 0;
             public double RpmAtMaxTorque = 0;
+            public double MaxBoost = 0;
             public double GhostLimiterRpm = 0; 
             public double GhostLimiterCandidateRpm = 0;
             public double GhostLimiterCandidateTime = 0; 
@@ -72,6 +74,7 @@ namespace FH6SmartShift
             public int[] BandSamples = new int[401];
             public int MinMappedBand = 400; 
             public int MaxMappedBand = 0;
+            public double MappingProgress = 0;
 
             public double Best0To100 = 0;
             public double Best100To200 = 0;
@@ -359,7 +362,7 @@ namespace FH6SmartShift
 
             var titleBlock = new TextBlock
             {
-                Text = "🏎️ FH6SmartShift v1.1.0 — FH6 & Forza Motorsport Control Center",
+                Text = "🏎️ FH6SmartShift v1.1.1 — FH6 & Forza Motorsport Control Center",
                 FontSize = 20,
                 FontWeight = FontWeights.Bold,
                 Foreground = textWhite,
@@ -367,7 +370,7 @@ namespace FH6SmartShift
             };
             var subTitleBlock = new TextBlock
             {
-                Text = "Real-time 401-Band Virtual Dyno, 12-LED Shift Engine, Dragy Performance Timer & Gearbox Tuning Advisor.",
+                Text = "Real-time 401-Band Virtual Dyno (100% Map Gate), 12-LED Shift Engine, Dragy Timer & Gearbox Tuning Advisor.",
                 FontSize = 13,
                 Foreground = textMuted,
                 Margin = new Thickness(0, 0, 0, 18)
@@ -605,6 +608,7 @@ namespace FH6SmartShift
             {
                 if (ep.BoostMap != null)
                 {
+                    double maxB = 0;
                     for (int i = 0; i < ep.BoostMap.Length; i++)
                     {
                         if (ep.BoostMap[i] < 0)
@@ -612,7 +616,9 @@ namespace FH6SmartShift
                             ep.BoostMap[i] = 0;
                             globalBoostCleaned = true;
                         }
+                        if (ep.BoostMap[i] > maxB) maxB = ep.BoostMap[i];
                     }
+                    if (maxB > ep.MaxBoost) ep.MaxBoost = maxB;
                 }
             }
             if (globalBoostCleaned) _isDataDirty = true;
@@ -762,7 +768,7 @@ namespace FH6SmartShift
 <html lang=""en"">
 <head>
 <meta charset=""UTF-8"">
-<title>FH6SmartShift v1.1.0 — FH6 &amp; Forza Motorsport Virtual Dyno, Dragy &amp; Tuning Inspector</title>
+<title>FH6SmartShift v1.1.1 — FH6 &amp; Forza Motorsport Virtual Dyno, Dragy &amp; Tuning Inspector</title>
 <style>
   * { box-sizing: border-box; }
   body {
@@ -907,7 +913,7 @@ namespace FH6SmartShift
     margin-bottom: 12px;
   }
   .chart-header h3 { margin: 0; font-size: 16px; color: #fff; }
-  .legend { font-size: 13px; color: #8b949e; display: flex; gap: 16px; }
+  .legend { font-size: 13px; color: #8b949e; display: flex; gap: 16px; align-items: center; }
   .leg-hp { color: #3fb950; font-weight: 700; }
   .leg-nm { color: #58a6ff; font-weight: 700; }
   canvas { width: 100%; height: 320px; display: block; }
@@ -919,7 +925,7 @@ namespace FH6SmartShift
   <div class=""header"">
     <h1>🏎️ FH6SmartShift — Dyno, Dragy &amp; Gearbox Tuning Inspector</h1>
     <div class=""controls"">
-      <select id=""carSelect"" onchange=""renderCar(this.value)""></select>
+      <select id=""carSelect"" onchange=""forcePreview=false;renderCar(this.value)""></select>
       <button class=""btn"" onclick=""renameCurrentCar()"">✏️ Name Car</button>
       <button class=""btn"" onclick=""exportCarListJson()"">💾 CarList.json</button>
       <button class=""btn btn-blue"" onclick=""exportSingleCarProfile()"">📤 Export Car</button>
@@ -983,8 +989,9 @@ namespace FH6SmartShift
 
   <div class=""chart-card"">
     <div class=""chart-header"">
-      <h3>📈 401-Band Virtual Dyno Curve (Power HP &amp; Torque Nm)</h3>
+      <h3 id=""chartTitle"">📈 401-Band Virtual Dyno Curve (Power HP &amp; Torque Nm)</h3>
       <div class=""legend"">
+        <button class=""btn"" id=""previewBtn"" style=""display:none;padding:4px 10px;font-size:11.5px;"" onclick=""forcePreview=!forcePreview;renderCar(document.getElementById('carSelect').value)"">👁️ Toggle Partial Curve</button>
         <span class=""leg-hp"">● Engine Power (HP)</span>
         <span class=""leg-nm"">● Engine Torque (Nm)</span>
       </div>
@@ -997,6 +1004,7 @@ namespace FH6SmartShift
 let dbData = " + jsonPayload + @";
 let defaultCarKey = " + safeActiveKey + @";
 let localNames = JSON.parse(localStorage.getItem('fh6_custom_car_names') || '{}');
+let forcePreview = false;
 
 function getRawCarName(key) {
   const cleanKey = key.replace(/^FM_/, '');
@@ -1153,10 +1161,32 @@ function populateCarSelect(forceKey) {
   }
 }
 
-function getBandValue(map, rpm) {
+function getSmoothedBandValue(map, rpm) {
   if (!Array.isArray(map) || rpm <= 0) return 0;
   const idx = Math.min(400, Math.max(0, Math.round(rpm / 50)));
-  return map[idx] || 0;
+  let sum = 0, cnt = 0;
+  for (let d = -1; d <= 1; d++) {
+    const k = idx + d;
+    if (k >= 0 && k <= 400 && map[k] > 0) { sum += map[k]; cnt++; }
+  }
+  return cnt > 0 ? (sum / cnt) : 0;
+}
+
+function computeMapProgress(ep, actualLimiter) {
+  if (typeof ep.MappingProgress === 'number' && ep.MappingProgress > 0) return ep.MappingProgress;
+  const pMap = ep.PowerMap || [];
+  const rpmP = ep.RpmAtMaxPower || 6000;
+  const startRpm = Math.min(3000, Math.max(1500, rpmP * 0.45));
+  const endRpm = actualLimiter - 250;
+  if (endRpm <= startRpm) return 0;
+  const sBand = Math.max(0, Math.floor(startRpm / 50));
+  const eBand = Math.min(400, Math.ceil(endRpm / 50));
+  let filled = 0;
+  for (let i = sBand; i <= eBand; i++) {
+    if (pMap[i] > 0) filled++;
+  }
+  const pct = (filled / Math.max(1, eBand - sBand + 1)) * 100.0;
+  return pct >= 99.0 ? 100.0 : Math.min(100.0, pct);
 }
 
 function renderCar(key) {
@@ -1174,7 +1204,7 @@ function renderCar(key) {
   const rpmP = ep.RpmAtMaxPower || 0;
   const rpmT = ep.RpmAtMaxTorque || 0;
 
-  let maxBoostPsi = 0;
+  let maxBoostPsi = ep.MaxBoost || 0;
   if (Array.isArray(ep.BoostMap)) {
     for (let i = 0; i < ep.BoostMap.length; i++) {
       if (ep.BoostMap[i] > maxBoostPsi) maxBoostPsi = ep.BoostMap[i];
@@ -1195,13 +1225,20 @@ function renderCar(key) {
     ? ep.GhostLimiterRpm
     : Math.max(gaugeRpm, maxMappedBand * 50.0);
 
+  const mapPct = computeMapProgress(ep, actualLimiter);
+  const isMap100 = mapPct >= 99.5;
+
   const limiterText = (ep.GhostLimiterRpm && ep.GhostLimiterRpm > 0)
     ? `and a detected hidden rev limiter (GhostLimiterRpm) at <strong>${ep.GhostLimiterRpm.toFixed(1)} RPM</strong> (on an ${gaugeRpm} RPM gauge cluster).`
     : `and standard rev limiter up to <strong>${actualLimiter.toFixed(0)} RPM</strong> (on an ${gaugeRpm} RPM gauge cluster).`;
 
+  const mapBadge = isMap100
+    ? `<span style=""color:#3fb950;font-weight:700;"">[DYNO MAP: 100% COMPLETE]</span>`
+    : `<span style=""color:#e3b341;font-weight:700;"">[DYNO MAP: ${mapPct.toFixed(1)}% — INCOMPLETE]</span>`;
+
   document.getElementById('profileSummary').innerHTML = `
     <button class=""btn"" style=""float:right;padding:4px 10px;font-size:12px;"" onclick=""copySummary()"">📋 Copy Summary</button>
-    <strong>Engine &amp; Dyno Profile — ${cName} (<code>${key}</code>):</strong>
+    <strong>Engine &amp; Dyno Profile — ${cName} (<code>${key}</code>) ${mapBadge}:</strong>
     Peak power of <strong>${hp.toFixed(1)} HP (${kw.toFixed(1)} kW)</strong> at <strong>${rpmP.toFixed(0)} RPM</strong>,
     peak torque of <strong>${nm.toFixed(1)} Nm</strong> at <strong>${rpmT.toFixed(0)} RPM</strong>,
     <strong>${boostText}</strong>, ${limiterText}
@@ -1268,34 +1305,36 @@ function renderCar(key) {
       const landRpm = Math.round(refShift * dropRatio);
       landStr = `~${landRpm} RPM`;
 
-      const pAtLand = getBandValue(ep.PowerMap, landRpm);
-      const bAtLand = getBandValue(ep.BoostMap, landRpm);
+      if (isMap100) {
+        const pAtLand = getSmoothedBandValue(ep.PowerMap, landRpm);
+        const bAtLand = getSmoothedBandValue(ep.BoostMap, landRpm);
 
-      if (rpmT > 2500 && landRpm < rpmT * 0.90 && g >= 1) {
-        advisorTips.push({
-          type: 'warn',
-          text: `⚠️ <strong>Gear ${g} → ${g+1} Too Wide (${dropPct}% drop):</strong> Landing at <strong>~${landRpm} RPM</strong> drops below Peak Torque (${rpmT.toFixed(0)} RPM). Shorten <strong>Gear ${g+1}</strong> (move slider toward Acceleration) so it lands closer to ${Math.round(rpmT)} RPM.`
-        });
-      } else if (ep.MaxPower > 0 && pAtLand > 0 && pAtLand < ep.MaxPower * 0.78 && g >= 2) {
-        const pLossPct = ((1.0 - (pAtLand / ep.MaxPower)) * 100).toFixed(1);
-        advisorTips.push({
-          type: 'warn',
-          text: `⚠️ <strong>Gear ${g} → ${g+1} Power Drop (-${pLossPct}% vs Peak):</strong> Landing at <strong>~${landRpm} RPM</strong> leaves the engine with only ${(pAtLand/745.7).toFixed(0)} HP. Consider tightening the gap between Gear ${g} and Gear ${g+1}.`
-        });
-      } else if (g <= 4 && dropRatio > 0.895) {
-        advisorTips.push({
-          type: 'info',
-          text: `ℹ️ <strong>Gear ${g} → ${g+1} Very Close Ratio (${dropPct}% drop):</strong> Tight spacing in lower gears increases shift frequency. You can lengthen Gear ${g+1} slightly unless this is a dedicated 8–10 speed close-ratio build.`
-        });
-      } else {
-        optimalTransitions++;
-      }
+        if (rpmT > 2500 && landRpm < rpmT * 0.90 && g >= 1) {
+          advisorTips.push({
+            type: 'warn',
+            text: `⚠️ <strong>Gear ${g} → ${g+1} Too Wide (${dropPct}% drop):</strong> Landing at <strong>~${landRpm} RPM</strong> drops below Peak Torque (${rpmT.toFixed(0)} RPM). Shorten <strong>Gear ${g+1}</strong> (move slider toward Acceleration) so it lands closer to ${Math.round(rpmT)} RPM.`
+          });
+        } else if (ep.MaxPower > 0 && pAtLand > 0 && pAtLand < ep.MaxPower * 0.78 && g >= 2) {
+          const pLossPct = ((1.0 - (pAtLand / ep.MaxPower)) * 100).toFixed(1);
+          advisorTips.push({
+            type: 'warn',
+            text: `⚠️ <strong>Gear ${g} → ${g+1} Power Drop (-${pLossPct}% vs Peak):</strong> Landing at <strong>~${landRpm} RPM</strong> leaves the engine with only ${(pAtLand/745.7).toFixed(0)} HP. Consider tightening the gap between Gear ${g} and Gear ${g+1}.`
+          });
+        } else if (g <= 4 && dropRatio > 0.895) {
+          advisorTips.push({
+            type: 'info',
+            text: `ℹ️ <strong>Gear ${g} → ${g+1} Very Close Ratio (${dropPct}% drop):</strong> Tight spacing in lower gears increases shift frequency. You can lengthen Gear ${g+1} slightly unless this is a dedicated 8–10 speed close-ratio build.`
+          });
+        } else {
+          optimalTransitions++;
+        }
 
-      if (maxBoostPsi > 2.5 && bAtLand > 0 && bAtLand < maxBoostPsi * 0.72) {
-        advisorTips.push({
-          type: 'warn',
-          text: `🐌 <strong>Turbo Lag Risk on Gear ${g} → ${g+1}:</strong> Boost pressure at ~${landRpm} RPM is only <strong>${bAtLand.toFixed(1)} psi</strong> (vs ${maxBoostPsi.toFixed(1)} psi peak). Shorten Gear ${g+1} to keep the turbo spooled!`
-        });
+        if (maxBoostPsi > 2.5 && bAtLand > 0 && bAtLand < maxBoostPsi * 0.72) {
+          advisorTips.push({
+            type: 'warn',
+            text: `🐌 <strong>Turbo Lag Risk on Gear ${g} → ${g+1}:</strong> Boost pressure at ~${landRpm} RPM is only <strong>${bAtLand.toFixed(1)} psi</strong> (vs ${maxBoostPsi.toFixed(1)} psi peak). Shorten Gear ${g+1} to keep the turbo spooled!`
+          });
+        }
       }
     }
 
@@ -1315,38 +1354,72 @@ function renderCar(key) {
   const advContainer = document.getElementById('tuningAdvisorBody');
   advContainer.innerHTML = '';
 
-  if (optimalTransitions > 0) {
-    const okDiv = document.createElement('div');
-    okDiv.className = 'adv-item adv-ok';
-    okDiv.innerHTML = `✅ <strong>Powerband Alignment:</strong> <strong>${optimalTransitions}</strong> gear transition(s) land squarely inside the optimal power window between Peak Torque (${rpmT.toFixed(0)} RPM) and Peak Power (${rpmP.toFixed(0)} RPM).`;
-    advContainer.appendChild(okDiv);
+  if (!isMap100) {
+    const waitDiv = document.createElement('div');
+    waitDiv.className = 'adv-item adv-warn';
+    waitDiv.innerHTML = `⏳ <strong>Waiting for 100% Dyno Map (${mapPct.toFixed(1)}% Completed):</strong> During standing launches (0–200 km/h), gears 2–6 land above ~5,000 RPM and skip the mid-range (3,000–4,900 RPM). Do one clean wide-open throttle pull from <strong>~2,500 RPM in 3rd or 4th gear</strong> to reach 100% map completion and unlock verified Gearbox Tuning Advisor recommendations.`;
+    advContainer.appendChild(waitDiv);
+  } else {
+    if (optimalTransitions > 0) {
+      const okDiv = document.createElement('div');
+      okDiv.className = 'adv-item adv-ok';
+      okDiv.innerHTML = `✅ <strong>Powerband Alignment:</strong> <strong>${optimalTransitions}</strong> gear transition(s) land squarely inside the optimal power window between Peak Torque (${rpmT.toFixed(0)} RPM) and Peak Power (${rpmP.toFixed(0)} RPM).`;
+      advContainer.appendChild(okDiv);
+    }
+
+    if (rpmP > 0 && actualLimiter - rpmP > 750) {
+      const overRevDiv = document.createElement('div');
+      overRevDiv.className = 'adv-item adv-info';
+      overRevDiv.innerHTML = `💡 <strong>Early Peak Power Characteristic:</strong> Peak power occurs at <strong>${rpmP.toFixed(0)} RPM</strong> (${Math.round(actualLimiter - rpmP)} RPM before the ${actualLimiter.toFixed(0)} RPM limiter). Shifting at the green <strong>(P)</strong> targets instead of redline yields maximum wheel thrust.`;
+      advContainer.appendChild(overRevDiv);
+    }
+
+    advisorTips.forEach(tip => {
+      const d = document.createElement('div');
+      d.className = 'adv-item ' + (tip.type === 'warn' ? 'adv-warn' : 'adv-info');
+      d.innerHTML = tip.text;
+      advContainer.appendChild(d);
+    });
   }
 
-  if (rpmP > 0 && actualLimiter - rpmP > 750) {
-    const overRevDiv = document.createElement('div');
-    overRevDiv.className = 'adv-item adv-info';
-    overRevDiv.innerHTML = `💡 <strong>Early Peak Power Characteristic:</strong> Peak power occurs at <strong>${rpmP.toFixed(0)} RPM</strong> (${Math.round(actualLimiter - rpmP)} RPM before the ${actualLimiter.toFixed(0)} RPM limiter). Shifting at the green <strong>(P)</strong> targets instead of redline yields maximum wheel thrust.`;
-    advContainer.appendChild(overRevDiv);
-  }
-
-  advisorTips.forEach(tip => {
-    const d = document.createElement('div');
-    d.className = 'adv-item ' + (tip.type === 'warn' ? 'adv-warn' : 'adv-info');
-    d.innerHTML = tip.text;
-    advContainer.appendChild(d);
-  });
-
-  if (advisorTips.length === 0 && optimalTransitions === 0) {
-    advContainer.innerHTML = `<div class=""adv-item adv-info"">Drive through all gears at wide-open throttle in Forza Horizon 6 or Forza Motorsport to unlock automated gearbox ratio recommendations.</div>`;
-  }
-
-  drawDynoChart(ep);
+  document.getElementById('previewBtn').style.display = isMap100 ? 'none' : 'inline-block';
+  drawDynoChart(ep, isMap100, mapPct, actualLimiter);
 }
 
-function drawDynoChart(ep) {
+function drawDynoChart(ep, isMap100, mapPct, actualLimiter) {
   const canvas = document.getElementById('dynoCanvas');
   const ctx = canvas.getContext('2d');
   ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+  if (!isMap100 && !forcePreview) {
+    ctx.fillStyle = '#161b22';
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    ctx.strokeStyle = '#30363d';
+    ctx.lineWidth = 2;
+    ctx.strokeRect(20, 20, canvas.width - 40, canvas.height - 40);
+
+    ctx.fillStyle = '#e3b341';
+    ctx.font = 'bold 20px Segoe UI';
+    ctx.textAlign = 'center';
+    ctx.fillText(`⏳ VIRTUAL DYNO CURVE LOCKED UNTIL 100% MAP COMPLETION (CURRENT: ${mapPct.toFixed(1)}%)`, canvas.width / 2, 115);
+
+    ctx.fillStyle = '#8b949e';
+    ctx.font = '14.5px Segoe UI';
+    ctx.fillText('Standing 0–200 km/h launches spin 1st gear and land above ~5,000 RPM in gears 2–6, leaving 3,000–4,900 RPM unmapped.', canvas.width / 2, 155);
+    ctx.fillStyle = '#e6edf3';
+    ctx.fillText('👉 Pull cleanly from ~2,500 RPM to Redline in 3rd or 4th gear at 100% throttle to complete the map (or click Toggle Partial Curve above).', canvas.width / 2, 188);
+
+    const barW = 520, barH = 18;
+    const barX = (canvas.width - barW) / 2, barY = 220;
+    ctx.fillStyle = '#21262d';
+    ctx.fillRect(barX, barY, barW, barH);
+    ctx.fillStyle = '#238636';
+    ctx.fillRect(barX, barY, Math.max(8, (mapPct / 100.0) * barW), barH);
+    ctx.strokeStyle = '#30363d';
+    ctx.strokeRect(barX, barY, barW, barH);
+    ctx.textAlign = 'start';
+    return;
+  }
 
   const pMap = ep.PowerMap || [];
   const tMap = ep.TorqueMap || [];
@@ -1371,28 +1444,33 @@ function drawDynoChart(ep) {
     ctx.fillText(r + ' RPM', x - 24, padT + h + 22);
   }
 
+  // Smoothed Torque Curve (No fake straight-line bridging across >150 RPM unmapped gaps)
   ctx.strokeStyle = '#58a6ff';
   ctx.lineWidth = 2.5;
   ctx.beginPath();
-  let started = false;
+  let lastValidBandT = -10;
   for (let i = 1; i <= maxBand; i++) {
     if (tMap[i] <= 0) continue;
+    const valT = getSmoothedBandValue(tMap, i * 50);
     const x = padL + ((i * 50) / maxRpmPlot) * w;
-    const y = padT + h - (tMap[i] / maxNm) * h;
-    if (!started) { ctx.moveTo(x, y); started = true; } else ctx.lineTo(x, y);
+    const y = padT + h - (valT / maxNm) * h;
+    if (i - lastValidBandT > 3) { ctx.moveTo(x, y); } else { ctx.lineTo(x, y); }
+    lastValidBandT = i;
   }
   ctx.stroke();
 
+  // Smoothed Power Curve (No fake straight-line bridging across >150 RPM unmapped gaps)
   ctx.strokeStyle = '#3fb950';
   ctx.lineWidth = 3;
   ctx.beginPath();
-  started = false;
+  let lastValidBandP = -10;
   for (let i = 1; i <= maxBand; i++) {
     if (pMap[i] <= 0) continue;
-    const hp = pMap[i] / 745.7;
+    const valP = getSmoothedBandValue(pMap, i * 50) / 745.7;
     const x = padL + ((i * 50) / maxRpmPlot) * w;
-    const y = padT + h - (hp / maxHp) * h;
-    if (!started) { ctx.moveTo(x, y); started = true; } else ctx.lineTo(x, y);
+    const y = padT + h - (valP / maxHp) * h;
+    if (i - lastValidBandP > 3) { ctx.moveTo(x, y); } else { ctx.lineTo(x, y); }
+    lastValidBandP = i;
   }
   ctx.stroke();
 }
@@ -1436,7 +1514,9 @@ populateCarSelect();
                     PowerMap = mapCopy, TorqueMap = torqueCopy, BoostMap = boostCopy,
                     MaxPower = engine.Value.MaxPower, RpmAtMaxPower = engine.Value.RpmAtMaxPower,
                     MaxTorque = engine.Value.MaxTorque, RpmAtMaxTorque = engine.Value.RpmAtMaxTorque,
+                    MaxBoost = engine.Value.MaxBoost,
                     GhostLimiterRpm = engine.Value.GhostLimiterRpm,
+                    MappingProgress = engine.Value.MappingProgress,
                     Best0To100 = engine.Value.Best0To100,
                     Best100To200 = engine.Value.Best100To200,
                     Best0To200 = engine.Value.Best0To200
@@ -1477,7 +1557,9 @@ populateCarSelect();
                     PowerMap = pMap, TorqueMap = tMap, BoostMap = bMap,
                     MaxPower = ep.MaxPower, RpmAtMaxPower = ep.RpmAtMaxPower,
                     MaxTorque = ep.MaxTorque, RpmAtMaxTorque = ep.RpmAtMaxTorque,
+                    MaxBoost = ep.MaxBoost,
                     GhostLimiterRpm = ep.GhostLimiterRpm,
+                    MappingProgress = ep.MappingProgress,
                     Best0To100 = ep.Best0To100,
                     Best100To200 = ep.Best100To200,
                     Best0To200 = ep.Best0To200
@@ -1537,7 +1619,9 @@ populateCarSelect();
                 PowerMap = profileCopy, TorqueMap = torqueCopy, BoostMap = boostCopy,
                 MaxPower = _globalEngine.MaxPower, RpmAtMaxPower = _globalEngine.RpmAtMaxPower,
                 MaxTorque = _globalEngine.MaxTorque, RpmAtMaxTorque = _globalEngine.RpmAtMaxTorque,
+                MaxBoost = _globalEngine.MaxBoost,
                 GhostLimiterRpm = _globalEngine.GhostLimiterRpm,
+                MappingProgress = _globalEngine.MappingProgress,
                 Best0To100 = _globalEngine.Best0To100,
                 Best100To200 = _globalEngine.Best100To200,
                 Best0To200 = _globalEngine.Best0To200
@@ -1578,12 +1662,12 @@ populateCarSelect();
             if (targetBand < 0 || targetBand > 400) return 0;
 
             int bestLower = -1;
-            for (int i = targetBand; i >= Math.Max(0, targetBand - 6); i--) { if (map[i] > 0) { bestLower = i; break; } }
+            for (int i = targetBand; i >= Math.Max(0, targetBand - 4); i--) { if (map[i] > 0) { bestLower = i; break; } }
             
             int bestUpper = -1;
-            for (int i = targetBand + 1; i <= Math.Min(400, targetBand + 6); i++) { if (map[i] > 0) { bestUpper = i; break; } }
+            for (int i = targetBand + 1; i <= Math.Min(400, targetBand + 4); i++) { if (map[i] > 0) { bestUpper = i; break; } }
 
-            if (bestLower != -1 && bestUpper != -1)
+            if (bestLower != -1 && bestUpper != -1 && (bestUpper - bestLower) <= 4)
             {
                 double p0 = map[bestLower]; double p1 = map[bestUpper];
                 double r0 = bestLower * 50.0; double r1 = bestUpper * 50.0;
@@ -1632,7 +1716,7 @@ populateCarSelect();
                 if (leftP > 10000.0 && rightP > 10000.0)
                 {
                     double avgNeighbors = 0.5 * (leftP + rightP);
-                    if (_globalEngine.PowerMap[i] > 0 && _globalEngine.PowerMap[i] < avgNeighbors * 0.84)
+                    if (_globalEngine.PowerMap[i] == 0 || _globalEngine.PowerMap[i] < avgNeighbors * 0.88)
                     {
                         _globalEngine.PowerMap[i] = avgNeighbors;
                         _globalEngine.TorqueMap[i] = 0.5 * (_globalEngine.TorqueMap[i - 1] + _globalEngine.TorqueMap[i + 1]);
@@ -1650,8 +1734,8 @@ populateCarSelect();
                     {
                         double expected1 = l2 + (r2 - l2) * (1.0 / 3.0);
                         double expected2 = l2 + (r2 - l2) * (2.0 / 3.0);
-                        if (_globalEngine.PowerMap[i] > 0 && _globalEngine.PowerMap[i + 1] > 0 &&
-                            _globalEngine.PowerMap[i] < expected1 * 0.82 && _globalEngine.PowerMap[i + 1] < expected2 * 0.82)
+                        if ((_globalEngine.PowerMap[i] == 0 || _globalEngine.PowerMap[i] < expected1 * 0.86) &&
+                            (_globalEngine.PowerMap[i + 1] == 0 || _globalEngine.PowerMap[i + 1] < expected2 * 0.86))
                         {
                             _globalEngine.PowerMap[i] = expected1;
                             _globalEngine.PowerMap[i + 1] = expected2;
@@ -1662,6 +1746,8 @@ populateCarSelect();
                                 _globalEngine.TorqueMap[i] = tl + (tr - tl) * (1.0 / 3.0);
                                 _globalEngine.TorqueMap[i + 1] = tl + (tr - tl) * (2.0 / 3.0);
                             }
+                            if (_globalEngine.BandSamples[i] == 0) _globalEngine.BandSamples[i] = 2;
+                            if (_globalEngine.BandSamples[i + 1] == 0) _globalEngine.BandSamples[i + 1] = 2;
                             healed = true;
                         }
                     }
@@ -1681,7 +1767,7 @@ populateCarSelect();
                 if (otherGear == targetGear || otherRatio <= 0) continue;
 
                 int gearDiff = Math.Abs(targetGear - otherGear);
-                double minStepFactor = Math.Pow(1.018, gearDiff);
+                double minStepFactor = Math.Pow(1.022, gearDiff);
 
                 if (otherGear < targetGear)
                 {
@@ -1693,6 +1779,38 @@ populateCarSelect();
                 }
             }
             return true;
+        }
+
+        // Wykrywa i usuwa anomalie przełożeń powstałe na uślizgu (np. Gear 4 = 36.05 zamiast 43.32 w dyno3.jpg)
+        private void SanitizeGearProgression()
+        {
+            for (int g = 2; g <= 9; g++)
+            {
+                if (_gearStates.TryGetValue(g - 1, out var prev) && prev.SavedRpmPerRadS > 0 &&
+                    _gearStates.TryGetValue(g, out var curr) && curr.SavedRpmPerRadS > 0 &&
+                    _gearStates.TryGetValue(g + 1, out var next) && next.SavedRpmPerRadS > 0)
+                {
+                    double dropPrevToCurr = curr.SavedRpmPerRadS / prev.SavedRpmPerRadS;
+                    double dropCurrToNext = next.SavedRpmPerRadS / curr.SavedRpmPerRadS;
+
+                    // Jeśli spadek na biegu g jest nienaturalnie ogromny (< 0.635), a na kolejnym biegu g+1 nienaturalnie płytki (> 0.875)
+                    if (dropPrevToCurr < 0.635 && dropCurrToNext > 0.875 && (dropCurrToNext - dropPrevToCurr) > 0.24)
+                    {
+                        curr.SavedRpmPerRadS = 0;
+                        curr.RpmPerRadS = 0;
+                        curr.ShiftTriggerRpm = 0;
+                        curr.IsConfirmed = false;
+                        curr.IsMathOptimal = false;
+                        curr.TriggerIsEdge = false;
+                        curr.TriggerIsGhost = false;
+                        curr.RatioSamples = 0;
+                        if (_store.GearRatios.ContainsKey(_key)) _store.GearRatios[_key].Remove(g);
+                        if (_store.AdvancedGears.ContainsKey(_key)) _store.AdvancedGears[_key].Remove(g);
+                        _isDataDirty = true;
+                        _mathNeedsEval = true;
+                    }
+                }
+            }
         }
 
         private void CleanUpContaminatedBands(double ghostRpm)
@@ -1743,6 +1861,7 @@ populateCarSelect();
         private void EvaluateAllMathIntersections(double throttle, int currentGear, double engineMaxRpm, double currentRpm, double actualLimiterLocal)
         {
             HealEngineMapPockets();
+            SanitizeGearProgression();
             Array.Clear(_precomputedPower, 0, _precomputedPower.Length);
 
             _globalEngine.MaxPower = 0;
@@ -1772,10 +1891,7 @@ populateCarSelect();
             double denseUpperLimit = actualLimiterLocal - 250.0;
             bool isUpperPowerBandDense = IsRangeDense(Math.Max(startRpm, _globalEngine.RpmAtMaxPower * 0.72), denseUpperLimit, 0.78);
 
-            bool hasTurbo = false;
-            for (int i = 0; i <= 400; i++) {
-                if (_globalEngine.BoostMap[i] > 0.1) { hasTurbo = true; break; }
-            }
+            bool hasTurbo = _globalEngine.MaxBoost > 1.5;
 
             for (int g = 1; g <= 10; g++)
             {
@@ -2389,7 +2505,9 @@ populateCarSelect();
                         
                         _globalEngine.MaxPower = savedEngine.MaxPower; _globalEngine.RpmAtMaxPower = savedEngine.RpmAtMaxPower;
                         _globalEngine.MaxTorque = savedEngine.MaxTorque; _globalEngine.RpmAtMaxTorque = savedEngine.RpmAtMaxTorque;
+                        _globalEngine.MaxBoost = savedEngine.MaxBoost;
                         _globalEngine.GhostLimiterRpm = savedEngine.GhostLimiterRpm;
+                        _globalEngine.MappingProgress = savedEngine.MappingProgress;
                         _globalEngine.Best0To100 = savedEngine.Best0To100;
                         _globalEngine.Best100To200 = savedEngine.Best100To200;
                         _globalEngine.Best0To200 = savedEngine.Best0To200;
@@ -2401,6 +2519,7 @@ populateCarSelect();
                                 if (i < _globalEngine.MinMappedBand) _globalEngine.MinMappedBand = i;
                                 if (i > _globalEngine.MaxMappedBand) _globalEngine.MaxMappedBand = i;
                             }
+                            if (_globalEngine.BoostMap[i] > _globalEngine.MaxBoost) _globalEngine.MaxBoost = _globalEngine.BoostMap[i];
                         }
 
                         if (HealEngineMapPockets()) _isDataDirty = true;
@@ -2441,7 +2560,7 @@ populateCarSelect();
                                     double r2 = savedRatios[g2];
                                     if (r2 <= 0) continue;
                                     int diff = Math.Abs(g2 - g1);
-                                    double minStep = Math.Pow(1.018, diff);
+                                    double minStep = Math.Pow(1.022, diff);
                                     if (g1 < g2 && r1 <= r2 * minStep) violations++;
                                     else if (g1 > g2 && r1 * minStep >= r2) violations++;
                                 }
@@ -2469,6 +2588,7 @@ populateCarSelect();
                                 _gearStates[gear].RatioSamples = 0; 
                             }
                         }
+                        SanitizeGearProgression();
                         _mathNeedsEval = true;
                     }
 
@@ -2608,9 +2728,10 @@ populateCarSelect();
                 avgWheelSpeed = (Math.Abs(wheelSpeedRL) + Math.Abs(wheelSpeedRR)) / 2.0;
             }
 
-            double ratioSlipLimit = (currentGear <= 2) ? 0.25 : 0.18;
-            bool isRatioLearnSafe = isGrounded && !isReboundDetected && (maxDrivenSlipRatio < ratioSlipLimit) && (maxDrivenSlipAngle < 0.20) && (brake < BrakeDeadzone);
-            double currentRatio = (isRatioLearnSafe && avgWheelSpeed > 8.0 && currentRpm > 1100.0) ? currentRpm / avgWheelSpeed : 0;
+            // Zaostrzony filtr dla nauki przełożeń, aby uślizg na wyższych biegach nie zaniżał przełożenia (np. 36.05 zamiast 43.32)
+            double ratioSlipLimit = (currentGear <= 2) ? 0.14 : 0.09;
+            bool isRatioLearnSafe = isGrounded && !isReboundDetected && !inPuddle && (maxDrivenSlipRatio < ratioSlipLimit) && (maxDrivenSlipAngle < 0.12) && (brake < BrakeDeadzone);
+            double currentRatio = (isRatioLearnSafe && avgWheelSpeed > 10.0 && currentRpm > 1200.0) ? currentRpm / avgWheelSpeed : 0;
 
             double maxRearSlipAngle = Math.Max(Math.Abs(slipAngleRL), Math.Abs(slipAngleRR));
             double maxRearCombinedSlip = Math.Max(Math.Abs(combinedSlipRL), Math.Abs(combinedSlipRR));
@@ -2652,6 +2773,9 @@ populateCarSelect();
             
             bool isAfterAnyShift = (now - _lastDownshiftTime < DownshiftCooldownSeconds) || 
                                    (now - _lastUpshiftTime < UpshiftCooldownSeconds) || isAfterClutch;
+
+            bool isAfterShiftForRatio = (now - _lastDownshiftTime < DownshiftCooldownSeconds) || 
+                                        (now - _lastUpshiftTime < RatioLearnShiftSettleSeconds) || isAfterClutch;
 
             double rawDt = _dtStopwatch.Elapsed.TotalSeconds;
             _dtStopwatch.Restart();
@@ -2882,23 +3006,24 @@ populateCarSelect();
                 if (_cleanWotFrames >= 2 && currentPower > 5000.0)
                 {
                     double currentBoost = Math.Max(0.0, ReadDouble(pm, "DataCorePlugin.GameRawData.Boost")); 
-                    bool boostOk = true;
-                    bool hasTurbo = false;
-                    for (int i = 0; i <= 400; i++) {
-                        if (_globalEngine.BoostMap[i] > 0.1) { hasTurbo = true; break; }
-                    }
+                    if (currentBoost > _globalEngine.MaxBoost) _globalEngine.MaxBoost = currentBoost;
 
-                    if (hasTurbo) 
+                    bool boostOk = true;
+                    if (_globalEngine.MaxBoost > 3.0 && currentRpm >= 2800.0)
                     {
                         double expectedBoost = GetInterpolatedValue(currentRpm, _globalEngine.BoostMap);
-                        boostOk = currentBoost >= expectedBoost * 0.85;
+                        double minRequiredBoost = expectedBoost > 0
+                            ? Math.Max(expectedBoost * 0.88, _globalEngine.MaxBoost * 0.78)
+                            : _globalEngine.MaxBoost * 0.78;
+                        boostOk = currentBoost >= minRequiredBoost;
                     }
 
                     if (boostOk) 
                     {
                         if (currentRpmBand >= 0 && currentRpmBand <= 400)
                         {
-                            if (_lastLearnedBand > 0 && currentRpmBand > _lastLearnedBand && (currentRpmBand - _lastLearnedBand) <= 12)
+                            // Interpolacja tylko dla małych kroków (<= 5 pasm = 250 RPM), żeby nie rysować sztucznych linii przez pół obrotomierza
+                            if (_lastLearnedBand > 0 && currentRpmBand > _lastLearnedBand && (currentRpmBand - _lastLearnedBand) <= 5)
                             {
                                 if (_lastLearnedBand < _globalEngine.MinMappedBand) _globalEngine.MinMappedBand = _lastLearnedBand;
                                 if (currentRpmBand > _globalEngine.MaxMappedBand) _globalEngine.MaxMappedBand = currentRpmBand;
@@ -2911,11 +3036,12 @@ populateCarSelect();
 
                                     _globalEngine.BandSamples[i]++;
                                     double existingP = _globalEngine.PowerMap[i];
-                                    double alpha = existingP == 0 ? 1.0 : (sweepPower >= existingP ? 0.35 : 0.08);
+                                    // Jeśli nowa próbka ma wyraźnie wyższą moc (pełne doładowanie vs wcześniejszy spool-up), nadpisz szybko (0.80)
+                                    double alpha = existingP == 0 ? 1.0 : (sweepPower > existingP * 1.03 ? 0.80 : (sweepPower >= existingP ? 0.45 : 0.04));
 
                                     _globalEngine.PowerMap[i] = existingP == 0 ? sweepPower : (existingP * (1.0 - alpha)) + (sweepPower * alpha);
                                     _globalEngine.TorqueMap[i] = _globalEngine.TorqueMap[i] == 0 ? sweepTorque : (_globalEngine.TorqueMap[i] * (1.0 - alpha)) + (sweepTorque * alpha);
-                                    _globalEngine.BoostMap[i] = _globalEngine.BoostMap[i] == 0 ? currentBoost : Math.Max(_globalEngine.BoostMap[i] * 0.95, (_globalEngine.BoostMap[i] * (1.0 - alpha)) + (currentBoost * alpha));
+                                    _globalEngine.BoostMap[i] = _globalEngine.BoostMap[i] == 0 ? currentBoost : Math.Max(_globalEngine.BoostMap[i], currentBoost);
                                 }
                             }
                             else
@@ -2925,11 +3051,11 @@ populateCarSelect();
 
                                 _globalEngine.BandSamples[currentRpmBand]++;
                                 double existingP = _globalEngine.PowerMap[currentRpmBand];
-                                double alpha = existingP == 0 ? 1.0 : (currentPower >= existingP ? 0.35 : 0.08);
+                                double alpha = existingP == 0 ? 1.0 : (currentPower > existingP * 1.03 ? 0.80 : (currentPower >= existingP ? 0.45 : 0.04));
 
                                 _globalEngine.PowerMap[currentRpmBand] = existingP == 0 ? currentPower : (existingP * (1.0 - alpha)) + (currentPower * alpha);
                                 _globalEngine.TorqueMap[currentRpmBand] = _globalEngine.TorqueMap[currentRpmBand] == 0 ? currentTorque : (_globalEngine.TorqueMap[currentRpmBand] * (1.0 - alpha)) + (currentTorque * alpha);
-                                _globalEngine.BoostMap[currentRpmBand] = _globalEngine.BoostMap[currentRpmBand] == 0 ? currentBoost : Math.Max(_globalEngine.BoostMap[currentRpmBand] * 0.95, (_globalEngine.BoostMap[currentRpmBand] * (1.0 - alpha)) + (currentBoost * alpha));
+                                _globalEngine.BoostMap[currentRpmBand] = _globalEngine.BoostMap[currentRpmBand] == 0 ? currentBoost : Math.Max(_globalEngine.BoostMap[currentRpmBand], currentBoost);
                             }
 
                             _lastLearnedTime = now;
@@ -2948,13 +3074,13 @@ populateCarSelect();
                     _lastLearnedTime = -100;
                 }
 
-                if (currentRatio > 0 && accel >= RatioLearnAccelThreshold && isDrivetrainEngaged && !isAfterAnyShift)
+                if (currentRatio > 0 && accel >= RatioLearnAccelThreshold && isDrivetrainEngaged && !isAfterShiftForRatio && Math.Abs(_currentRpmAccel) < 4500.0)
                 {
                     gs.RatioHistory[gs.RatioHistoryIdx] = currentRatio;
                     gs.RatioHistoryIdx = (gs.RatioHistoryIdx + 1) % 25;
                     if (gs.RatioSamples < 25) gs.RatioSamples++;
                     
-                    if (gs.RatioSamples >= 8)
+                    if (gs.RatioSamples >= 10)
                     {
                         int samplesToTake = gs.RatioSamples;
                         Array.Copy(gs.RatioHistory, _ratioScratch, samplesToTake);
@@ -2963,13 +3089,25 @@ populateCarSelect();
 
                         double p25 = _ratioScratch[samplesToTake / 4];
                         double p75 = _ratioScratch[(samplesToTake * 3) / 4];
-                        bool isTightCluster = median > 0 && ((p75 - p25) / median) < 0.025;
+                        bool isTightCluster = median > 0 && ((p75 - p25) / median) < 0.012;
 
                         if (isTightCluster)
                         {
                             if (gs.SavedRpmPerRadS > 0)
                             {
-                                if (maxAllSlip < 0.05 && samplesToTake >= 15 && Math.Abs(median - gs.SavedRpmPerRadS) / gs.SavedRpmPerRadS > 0.085)
+                                // NATYCHMIASTOWA AUTOKOREKTA W GÓRĘ: Jeśli wcześniej bieg zapisał się na uślizgu (np. 36.05 zamiast 43.32),
+                                // a teraz jedziemy z idealną trakcją (< 4% uślizgu) i widzimy wyższe przełożenie mechaniczne, od razu je naprawiamy!
+                                if (maxAllSlip < 0.04 && median > gs.SavedRpmPerRadS * 1.025 && IsRatioMonotonicAcrossAllGears(currentGear, median))
+                                {
+                                    gs.RpmPerRadS = median;
+                                    gs.SavedRpmPerRadS = median;
+                                    gs.RatioMismatchCount = 0;
+                                    if (!_store.GearRatios.ContainsKey(_key)) _store.GearRatios[_key] = new Dictionary<int, double>();
+                                    _store.GearRatios[_key][currentGear] = gs.RpmPerRadS;
+                                    _isDataDirty = true;
+                                    _mathNeedsEval = true;
+                                }
+                                else if (maxAllSlip < 0.04 && samplesToTake >= 18 && Math.Abs(median - gs.SavedRpmPerRadS) / gs.SavedRpmPerRadS > 0.085)
                                 {
                                     gs.RatioMismatchCount++;
                                     gs.RatioSamples = 0;
@@ -2982,7 +3120,7 @@ populateCarSelect();
                                     {
                                         Interlocked.Exchange(ref _resetRatiosRequested, 1);
                                     }
-                                    else if (gs.RatioMismatchCount >= 5)
+                                    else if (gs.RatioMismatchCount >= 4)
                                     {
                                         gs.SavedRpmPerRadS = 0;
                                         gs.RpmPerRadS = 0;
@@ -2998,11 +3136,12 @@ populateCarSelect();
                                         _mathNeedsEval = true;
                                     }
                                 }
-                                else if (maxAllSlip < 0.06)
+                                else if (maxAllSlip < 0.04 && Math.Abs(median - gs.SavedRpmPerRadS) / gs.SavedRpmPerRadS <= 0.025)
                                 {
                                     gs.RatioMismatchCount = 0;
                                     gs.RpmPerRadS = (gs.SavedRpmPerRadS * 0.90) + (median * 0.10);
                                     gs.SavedRpmPerRadS = gs.RpmPerRadS;
+                                    if (_store.GearRatios.ContainsKey(_key)) _store.GearRatios[_key][currentGear] = gs.SavedRpmPerRadS;
                                 }
                             }
                             else if (IsRatioMonotonicAcrossAllGears(currentGear, median))
@@ -3308,15 +3447,16 @@ populateCarSelect();
                 
                 _out.IsLearningComplete = isLearned;
 
-                double startRpm = Math.Max(1000, _globalEngine.RpmAtMaxPower * 0.55);
-                double baseRpmProgress = startRpm; 
+                // Pełne okno mapowania od ~3000 RPM (lub 0.45 * RpmAtMaxPower) do actualLimiter - 250 RPM
+                double refPeakRpm = _globalEngine.RpmAtMaxPower > 2000 ? _globalEngine.RpmAtMaxPower : engineMaxRpm * 0.80;
+                double baseRpmProgress = Math.Min(3000.0, Math.Max(1500.0, refPeakRpm * 0.45));
                 double denseUpperLimit = actualLimiter - 250.0;
                 
                 if (denseUpperLimit > baseRpmProgress)
                 {
                     int startBand = Math.Max(0, (int)Math.Floor(baseRpmProgress / 50.0));
                     int endBand = Math.Min(400, (int)Math.Ceiling(denseUpperLimit / 50.0));
-                    int expectedBands = Math.Max(1, endBand - startBand);
+                    int expectedBands = Math.Max(1, endBand - startBand + 1);
                     int filledBands = 0;
 
                     for (int i = startBand; i <= endBand; i++)
@@ -3324,11 +3464,14 @@ populateCarSelect();
                         if (_globalEngine.PowerMap[i] > 0) filledBands++;
                     }
                     
-                    _out.LiveMappingProgress = Math.Min(100.0, Math.Max(0.0, ((double)filledBands / expectedBands) * 100.0));
+                    double rawPct = ((double)filledBands / expectedBands) * 100.0;
+                    _out.LiveMappingProgress = rawPct >= 99.0 ? 100.0 : Math.Min(100.0, Math.Max(0.0, rawPct));
+                    _globalEngine.MappingProgress = _out.LiveMappingProgress;
                 }
                 else
                 {
                     _out.LiveMappingProgress = 0;
+                    _globalEngine.MappingProgress = 0;
                 }
 
                 double range = denseUpperLimit - baseRpmProgress;
@@ -3361,7 +3504,7 @@ populateCarSelect();
                     }
                 }
                 
-                bool isEngineMapTrusted = _out.LiveMappingProgress >= 92.0;
+                bool isEngineMapTrusted = _out.LiveMappingProgress >= 99.5;
                 _out.EngineMapStatus = isEngineMapTrusted ? "OK" : "LEARN";
 
                 for (int i = 1; i <= 10; i++)
@@ -3516,7 +3659,9 @@ populateCarSelect();
         public double RpmAtMaxPower { get; set; } = 0; 
         public double MaxTorque { get; set; } = 0; 
         public double RpmAtMaxTorque { get; set; } = 0; 
+        public double MaxBoost { get; set; } = 0;
         public double GhostLimiterRpm { get; set; } = 0; 
+        public double MappingProgress { get; set; } = 0;
         public double Best0To100 { get; set; } = 0;
         public double Best100To200 { get; set; } = 0;
         public double Best0To200 { get; set; } = 0;
