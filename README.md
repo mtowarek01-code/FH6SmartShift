@@ -40,6 +40,45 @@ During a hard standing launch (`0–200 km/h`), **1st gear** typically experienc
 
 ---
 
+## 🖥️ FH6SmartShift — Dyno, Dragy & Gearbox Tuning Inspector (`FH6SmartShift_GarageReport.html`)
+
+Every time the plugin saves telemetry data (or when you click **📊 Open Virtual Dyno & Tuning Report (HTML)** in the SimHub WPF Settings tab / trigger `FH6SmartShift.OpenDynoReport`), it generates an interactive standalone browser application in:
+`C:\Program Files (x86)\SimHub\PluginsData\Common\FH6SmartShift_GarageReport.html`
+
+![FH6SmartShift — Dyno, Dragy & Gearbox Tuning Inspector](./FH6SmartShift%20—%20Dyno,%20Dragy%20&%20Gearbox%20Tuning%20Inspector.jpg)
+
+![FH6SmartShift — 401-Band Virtual Dyno Curve](./FH6SmartShift%20—%20Dyno,%20Dragy%20&%20Gearbox%20Tuning%20Inspector%202.jpg)
+
+### Detailed Breakdown of the Garage Inspector Modules:
+
+1. **Top Control Bar (Profile Selector, Custom Naming & Database Sharing):**
+   * **Vehicle & Build Dropdown (`carSelect`):** Switch between all saved profiles across *Forza Horizon 6* (`[FH]`) and *Forza Motorsport* (`[FM]`), formatted with Car Name, PI Class, Drivetrain (`FWD` / `RWD` / `AWD`), and Gauge Cluster RPM (e.g., `Car #1006 | PI800 | AWD | Gauge 10000 RPM (1006_PI800_DT2_R10000)`).
+   * **`✏️ Name Car` & `💾 CarList.json`:** Because raw Forza UDP telemetry only transmits a numeric `CarOrdinal` ID, click **`✏️ Name Car`** to assign a custom name to any car or specific tune, and click **`💾 CarList.json`** to save your dictionary to `PluginsData\Common\`.
+   * **`📤 Export Car` & `📥 Import / Merge JSON`:** Export any single calibrated car build (`FH6_CarProfile_<Key>.json`) to share with other tuners, or import and merge external `.json` profiles into your database (`💾 Save Merged DB`).
+2. **Engine & Dyno Profile Summary Banner (`📋 Copy Summary`):**
+   * Displays map completion status (`[DYNO MAP: 100% COMPLETE]`), peak power in HP and kW with exact RPM, peak torque in Nm with exact RPM, maximum turbo boost in psi and bar, and detected hidden rev limiters (`GhostLimiterRpm`) with a one-click **`📋 Copy Summary`** button:
+   > *Example:* `Engine & Dyno Profile — Car #1006 (1006_PI800_DT2_R10000): Peak power of 628.8 HP (468.9 kW) at 9000 RPM, peak torque of 583.8 Nm at 6200 RPM, 4.20 psi (~0.29 bar) of boost, and a detected hidden rev limiter (GhostLimiterRpm) at 9481.0 RPM (on an 10000 RPM gauge cluster).`
+3. **Dragy Acceleration Telemetry Cards (`Best PB`):**
+   * Displays saved Personal Best acceleration times calculated via 60 Hz sub-frame linear interpolation:
+     * **⏱️ `0–100 KM/H (BEST PB)`** — Standing launch telemetry (e.g., `2.25 s`).
+     * **🚀 `100–200 KM/H (BEST PB)`** — Rolling or standing mid-range pull (e.g., `4.26 s`).
+     * **🏁 `0–200 KM/H (BEST PB)`** — Full standing sprint (e.g., `6.53 s`).
+4. **Complete Gears 1–10 Shift & Ratio Table:**
+   * **`Gear Ratio (RpmPerRadS)`:** Locked mechanical ratio (`EngineRPM / WheelRadS`, e.g., `138.76` in Gear 1 down to `28.11` in Gear 10).
+   * **`RPM Drop on N+1 Upshift (dropRatio)`:** Ratio step (`nextRatio / currentRatio`) and percentage RPM drop on upshift (e.g., `0.678 (-32.2%)` on `1 -> 2`, down to close-ratio `0.927 (-7.3%)` on `9 -> 10`).
+   * **`Next Gear Landing RPM`:** Exact engine RPM immediately after upshifting at the target RPM (e.g., `~6376 RPM` on `1 -> 2`, `~8734 RPM` on `9 -> 10`).
+   * **`Saved JSON Threshold (Rpm)` & `Physical Shift Target (OptimalShiftRpm)`:** Raw trigger stored in JSON and the exact unbuffered physical shift target (e.g., `9401 RPM` for limiter-optimal gears `1–7` & `10`, and `9448 RPM` / `9423 RPM` for math-peak optimal gears `8` & `9`).
+   * **`Dashboard Status`:** Color-coded calibration badge matching the SimHub dashboard (`(P)` Math Peak Optimal, `(L)` Limiter Confirmed, `(L?)` Edge/Unconfirmed, `(P?)` Unconfirmed Trigger, `(R)` Ratio Locked, `(-)` Unmapped).
+5. **Automated Gearbox Tuning Advisor (100%-Map Gated Telemetry Analysis):**
+   * Once the engine map reaches 100%, automatically evaluates every gear transition (`N -> N+1`) against your engine's torque curve, power curve, and boost curve:
+     * ✅ **`Powerband Alignment`:** Confirms how many gear transitions land squarely between Peak Torque and Peak Power (e.g., `9 gear transition(s) land squarely inside the optimal power window between Peak Torque (6200 RPM) and Peak Power (9000 RPM)`).
+     * 🐌 **`Turbo Lag Risk`:** Flags gear transitions where landing RPM drops turbo boost below `72%` of peak boost (e.g., `Turbo Lag Risk on Gear 1 -> 2: Boost pressure at ~6376 RPM is only 2.1 psi (vs 4.2 psi peak). Shorten Gear 2 to keep the turbo spooled!`).
+     * ⚠️ **`Too Wide / Power Drop / Very Close Ratio`:** Flags overly wide gear steps (landing below `90%` of Peak Torque RPM or losing `> 22%` peak power) and overly tight low-gear spacing (`dropRatio > 0.895`).
+6. **401-Band Virtual Dyno Curve Canvas (`Power HP & Torque Nm`):**
+   * Plots smoothed **Engine Power (HP, Green)** and **Engine Torque (Nm, Blue)** across the entire RPM range (`1,000–10,000+ RPM`) without artificial straight-line bridging across unmapped gaps.
+
+---
+
 ## 🧱 Core Features (v1.0 Foundation — Built-In Telemetry Systems)
 
 These foundational systems form the core physics and mathematical engine of **FH6SmartShift**:
@@ -91,37 +130,14 @@ Building on the v1.0 foundation, versions **v1.1.0** and **v1.1.1** introduce:
    * Enforces a `0.35 s` post-upshift stabilization window and a `1.2%` interquartile spread (`10+` samples) before locking gear ratios.
    * **Instant Upward Self-Correction:** Since wheelspin during acceleration always inflates wheel speed and *underestimates* `RpmPerRadS`, if the plugin later observes a higher mechanical ratio (`> +2.5%`) under full grip (`< 4%` slip), it immediately overwrites the slip-contaminated value.
    * **Geometric Progression Sanitizer (`SanitizeGearProgression`):** Automatically detects and purges any middle gear whose recorded ratio creates an impossible deep drop (`< 0.635`) followed by an abnormally flat step (`> 0.875`).
-4. **📊 Interactive HTML Garage Inspector & Automated Gearbox Tuning Advisor (`FH6SmartShift_GarageReport.html`):**
-   * Auto-generated browser application displaying peak HP/kW, peak Torque (Nm), peak Boost (psi/bar), `GhostLimiterRpm`, a full Gears 1–10 ratio/drop/landing table, a 401-band canvas dyno chart, and automated gearbox slider recommendations.
-5. **⏱️ Built-In Sub-Frame "Dragy" Performance Timer:**
-   * Linearly interpolated acceleration timer measuring **`0–100 km/h`**, **`100–200 km/h`** (standing or rolling), and **`0–200 km/h`**, automatically saving Personal Best (PB) records per car/tune in the JSON database.
+4. **📊 Interactive HTML Garage Inspector & Automated Gearbox Tuning Advisor (`FH6SmartShift_GarageReport.html`).**
+5. **⏱️ Built-In Sub-Frame "Dragy" Performance Timer (`0–100`, `100–200`, `0–200 km/h`)** with Personal Best persistence.
 6. **🔊 F1 / GT3 Audio Shift Beep (`ToggleShiftBeep` — Off by Default):**
    * Optional background audio cue (`2650 Hz`, `60 ms`) triggered the exact instant all 12 LEDs lock at `ShiftLightFlash` (`0.40 s` cooldown, zero frame-time impact). Disabled by default; enable anytime in the SimHub WPF Settings tab or via action `FH6SmartShift.ToggleShiftBeep`.
-7. **🏷️ Custom Car & Build Naming (`✏️ Name Car` & `FH6SmartShift_CarList.json`):**
-   * Assign custom names to specific `CarOrdinal` IDs or individual tuning setups directly in the HTML Garage Report (`✏️ Name Car`) and save them to `FH6SmartShift_CarList.json`. Exposed live in SimHub via `[FH6SmartShift.CurrentCarName]`.
-8. **🌐 Single-Car Export & Database Merge:**
-   * Export individual calibrated cars (`📤 Export Car`) to share with the community or merge external `.json` profiles (`📥 Import / Merge JSON`) directly inside the HTML Garage Inspector.
-9. **🖥️ Native SimHub WPF Control Center (`IWPFSettings`):**
-   * Dedicated SimHub settings panel with live telemetry/Dragy status, an interactive **Driver Reaction-Time Lead Buffer Slider (`0.10 s – 0.40 s`)**, Audio Shift Beep checkbox, and one-click memory/report actions.
-10. **🎯 Active Gear Delegates, Smooth 12-LED Engine & 3-Color Slide Recovery Bar:**
-    * Added `[FH6SmartShift.CurrentGearColor]` and `[FH6SmartShift.CurrentGearStatusText]` for single-box active gear borders/backgrounds.
-    * Added sequential 12-LED staging (`LedActiveCount` `1..12`), Multi-Warning Pill (`SLIP` / `OVRST!` / `BOTTOM!`), and a 3-color slip-derivative recovery bar (`SlideSeverity`, `SlideTrend`, `SlideStateText`, `SlideBarColor`: Red `▲ DEEPENING`, Orange `● HOLDING`, Green `◄ RECOVERING`).
-
----
-
-## 🖥️ Virtual Dyno, Dragy & Gearbox Inspector (`FH6SmartShift_GarageReport.html`)
-
-Every time the plugin saves telemetry data (or when you click **Open Virtual Dyno & Tuning Report** in SimHub / trigger `FH6SmartShift.OpenDynoReport`), it generates an interactive HTML application in:
-`C:\Program Files (x86)\SimHub\PluginsData\Common\FH6SmartShift_GarageReport.html`
-
-### Key Features of the Garage Inspector:
-1. **Vehicle Selector & Custom Car Naming (`✏️ Name Car` & `💾 CarList.json`):** Switch between all saved cars/tunes on the dropdown list (prefixed with `[FH]` or `[FM]` and formatted by default as `Car #Ordinal | PI | Drivetrain | Gauge RPM`). Click **`✏️ Name Car`** to assign your own custom name to a specific car or build, and click **`💾 CarList.json`** to save your custom dictionary to `PluginsData\Common\`.
-2. **Profile Sharing (`📤 Export Car` & `📥 Import / Merge JSON`):** Export any single car profile (`FH6_CarProfile_<Key>.json`) to share with friends, or import/merge external profiles and download the combined database (`💾 Save Merged DB`).
-3. **One-Click Engine & Dyno Summary Banner (with Map Completion Badge):** Displays `[DYNO MAP: 100% COMPLETE]` (or current percentage), peak power (HP & kW), peak torque (Nm), max boost pressure (psi & bar), and detected `GhostLimiterRpm` with a **`📋 Copy Summary`** button:
-   > *Example:* `Engine & Dyno Profile — [FH] AWD 10-Speed Twin-Turbo (#4122) (4122_PI800_DT2_R8000) [DYNO MAP: 100% COMPLETE]: Peak power of 848.1 HP (632.5 kW) at 6750 RPM, peak torque of 961.8 Nm at 3250 RPM, 38.66 psi (~2.67 bar) of boost, and a detected hidden rev limiter (GhostLimiterRpm) at 7769.8 RPM (on an 8000 RPM gauge cluster).`
-4. **Dragy Performance Records Cards:** Displays saved Personal Best times for **`0–100 km/h`**, **`100–200 km/h`**, and **`0–200 km/h`**.
-5. **Complete Gears 1–10 Shift Table & 100%-Gated Gearbox Tuning Advisor:** Displays each gear's ratio (`RpmPerRadS`), percentage RPM drop (`dropRatio`), next gear landing RPM (`~RPM`), saved JSON threshold, physical shift target (`OptimalShiftRpm`), status badge, and automated ratio tuning recommendations beneath the table (unlocked once the dyno map reaches 100%).
-6. **100%-Gated 401-Band Dyno Chart:** Plots smoothed **Engine Power (HP, Green)** and **Engine Torque (Nm, Blue)** across the RPM range without artificial straight-line bridging across unmapped gaps. Includes a `👁️ Toggle Partial Curve` button if you want to inspect an incomplete curve before reaching 100%.
+7. **🏷️ Custom Car & Build Naming (`✏️ Name Car` & `FH6SmartShift_CarList.json`).**
+8. **🌐 Single-Car Export (`📤 Export Car`) & Database Merge (`📥 Import / Merge JSON`).**
+9. **🖥️ Native SimHub WPF Control Center (`IWPFSettings`)** with an interactive **Driver Reaction-Time Lead Buffer Slider (`0.10 s – 0.40 s`)**.
+10. **🎯 Active Gear Delegates (`CurrentGearColor`, `CurrentGearStatusText`), Smooth 12-LED Engine (`LedActiveCount` `1..12`) & 3-Color Slide Recovery Bar (`▲ DEEPENING`, `● HOLDING`, `◄ RECOVERING`).**
 
 ---
 
@@ -172,13 +188,15 @@ The updated layout refines visual hierarchy and exposes the v1.1.1 telemetry pro
 ## 📂 Repository Contents & File Paths
 
 ```text
-├── FH6SmartShift.cs                       # Full C# source code of the plugin (v1.1.1 - FH6 & FM)
-├── FH6SmartShift.csproj                   # .NET Framework 4.8 (C# 7.3 + WPF) project file
-├── FH6SmartShift.dll                      # Compiled library ready to drop into SimHub
-├── FH6SmartShift_GarageReport.html        # Interactive Virtual Dyno, Dragy & Tuning Inspector
-├── FH6SmartShift_Dashboard_EN.jpg         # Annotated classic dashboard infographic
-├── FH6SmartShift_Optimal_Layout_v1.1.jpg  # Annotated v1.1 MoTeC-style dashboard layout
-├── DashTemplates.zip                      # Classic SimHub dashboards (KM/H & MPH)
-├── FH6SmartShift_Optimal.zip              # Optimal v1.1 MoTeC-style SimHub dashboard (1334x513)
-├── README.md                              # Online repository documentation (v1.1.1)
-└── README.pdf                             # Printable user manual & technical reference
+├── FH6SmartShift.cs                                                    # Full C# source code of the plugin (v1.1.1 - FH6 & FM)
+├── FH6SmartShift.csproj                                                # .NET Framework 4.8 (C# 7.3 + WPF) project file
+├── FH6SmartShift.dll                                                   # Compiled library ready to drop into SimHub
+├── FH6SmartShift_GarageReport.html                                     # Interactive Virtual Dyno, Dragy & Tuning Inspector
+├── FH6SmartShift — Dyno, Dragy & Gearbox Tuning Inspector.jpg          # Annotated Gears 1-10 Table, Dragy & Tuning Advisor screenshot
+├── FH6SmartShift — Dyno, Dragy & Gearbox Tuning Inspector 2.jpg        # Annotated 401-Band Virtual Dyno Curve screenshot
+├── FH6SmartShift_Dashboard_EN.jpg                                      # Annotated classic dashboard infographic
+├── FH6SmartShift_Optimal_Layout_v1.1.jpg                               # Annotated v1.1 MoTeC-style dashboard layout
+├── DashTemplates.zip                                                   # Classic SimHub dashboards (KM/H & MPH)
+├── FH6SmartShift_Optimal.zip                                           # Optimal v1.1 MoTeC-style SimHub dashboard (1334x513)
+├── README.md                                                           # Online repository documentation (v1.1.1)
+└── README.pdf                                                          # Printable user manual & technical reference
